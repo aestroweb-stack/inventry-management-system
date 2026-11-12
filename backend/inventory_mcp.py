@@ -666,6 +666,76 @@ def prepare_inventory_action(action: str, payload: dict[str, Any]) -> dict[str, 
         db.close()
 
 
+# Dedicated CRUD preparation tools: thin typed aliases for the existing
+# production validation and signed-confirmation pipeline. None performs a write.
+@mcp.tool()
+def prepare_create_product(sku: str, name: str, sizes: list[str], category: str = "") -> dict[str, Any]:
+    """CREATE preview: add a design and its sizes; operator confirmation required."""
+    return prepare_inventory_action("product_create", {
+        "sku": sku, "name": name, "sizes": sizes, "category": category
+    })
+
+
+@mcp.tool()
+def prepare_update_product(sku: str, new_name: str = "", new_category: str = "", new_sku: str = "") -> dict[str, Any]:
+    """UPDATE preview: rename, recategorize, or change SKU; confirmation required.
+
+    Empty optional arguments mean no change. To clear a category explicitly,
+    use the legacy prepare_inventory_action with new_category set to an empty string.
+    """
+    payload: dict[str, Any] = {"sku": sku}
+    if new_name.strip():
+        payload["new_name"] = new_name
+    if new_category.strip():
+        payload["new_category"] = new_category
+    if new_sku.strip():
+        payload["new_sku"] = new_sku
+    return prepare_inventory_action("product_update", payload)
+
+
+@mcp.tool()
+def prepare_archive_product(sku: str) -> dict[str, Any]:
+    """DELETE preview: move the product to Trash; no permanent deletion."""
+    return prepare_inventory_action("product_archive", {"sku": sku})
+
+
+@mcp.tool()
+def prepare_restore_product(sku: str) -> dict[str, Any]:
+    """RESTORE preview: recover an archived product from Trash."""
+    return prepare_inventory_action("product_restore", {"sku": sku})
+
+
+@mcp.tool()
+def prepare_add_size(sku: str, size: str, initial_stock: int = 0) -> dict[str, Any]:
+    """CREATE size preview for an existing SKU; confirmation required."""
+    return prepare_inventory_action("size_add", {
+        "sku": sku, "size": size, "initial_stock": initial_stock
+    })
+
+
+@mcp.tool()
+def prepare_archive_size(variant_code: str) -> dict[str, Any]:
+    """DELETE size preview: archive this SKU+size; do not permanently erase."""
+    return prepare_inventory_action("size_archive", {"variant_code": variant_code})
+
+
+@mcp.tool()
+def prepare_restore_size(variant_code: str) -> dict[str, Any]:
+    """RESTORE size preview: recover an archived SKU+size."""
+    return prepare_inventory_action("size_restore", {"variant_code": variant_code})
+
+
+@mcp.tool()
+def prepare_change_stock(variant_code: str, operation: str, quantity: int) -> dict[str, Any]:
+    """UPDATE stock preview: operation add, remove, or set; confirmation required.
+
+    'set' is a verified physical count; an uncounted size cannot use 'add'.
+    """
+    return prepare_inventory_action("stock_change", {
+        "variant_code": variant_code, "operation": operation, "quantity": quantity
+    })
+
+
 def _resolve_alerts(db, variant_id: int) -> None:
     now = datetime.now(timezone.utc)
     db.query(models.Alert).filter(models.Alert.variant_id == variant_id, models.Alert.resolved.is_(False)).update(
