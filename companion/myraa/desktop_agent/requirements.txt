@@ -1,0 +1,13 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pyautogui>=0.9.54
+pyperclip>=1.9
+send2trash>=1.8
+psutil>=5.9
+Pillow>=10
+pycaw>=20240210; platform_system == "Windows"
+comtypes>=1.4; platform_system == "Windows"
+pywin32>=306; platform_system == "Windows"
+playwright>=1.50
+# Optional for OCR-backed screen reading (install the Tesseract binary separately).
+pytesseract>=0.3

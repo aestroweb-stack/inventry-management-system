@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MYRAA · AI Inventory Workspace</title>
+<script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
+<link rel="stylesheet" href="style.css?v=myraa-production-2">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<link rel="stylesheet" href="myraa-production.css?v=2">
+</head>
+<body>
+
+<div id="shell" class="shell">
+  <!-- Mobile top bar -->
+  <header class="topbar">
+    <button id="menu-toggle" class="icon-btn" aria-label="Menu"><i class="fa-solid fa-bars"></i></button>
+    <span class="topbar-title">Inventory</span>
+    <button id="topbar-alerts" class="icon-btn" aria-label="Alerts">
+      <i class="fa-solid fa-bell"></i><span id="alert-count-mobile" class="badge" hidden>0</span>
+    </button>
+    <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><i class="fa-solid fa-moon" aria-hidden="true"></i></button>
+  </header>
+
+  <div id="nav-backdrop" class="nav-backdrop" hidden></div>
+
+  <aside id="sidebar" class="rail">
+    <div class="rail-identity">
+      <span class="rail-identity-mark" aria-hidden="true"><i class="fa-solid fa-shirt"></i></span>
+      <span class="rail-identity-name"><strong>Inventory</strong><small>with AI assistant <em>MYRAA</em></small></span>
+      <button id="sidebar-collapse" class="icon-btn rail-collapse" type="button" aria-label="Collapse sidebar" title="Collapse sidebar"><i class="fa-solid fa-chevron-left"></i></button>
+    </div>
+    <nav class="rail-nav">
+      <button data-view="dashboard" class="rail-link is-active"><i class="fa-solid fa-chart-line"></i><span class="rail-label">Dashboard</span></button>
+      <button data-view="products" class="rail-link"><i class="fa-solid fa-box-open"></i><span class="rail-label">Products</span></button>
+      <button data-view="scan" class="rail-link"><i class="fa-solid fa-qrcode"></i><span class="rail-label">Scan &amp; Recount</span></button>
+      <button data-view="visual" class="rail-link"><i class="fa-solid fa-camera-retro"></i><span class="rail-label">Visual Product Search</span></button>
+      <button data-view="bulk" class="rail-link"><i class="fa-solid fa-clipboard-check"></i><span class="rail-label">Bulk Stock Count</span></button>
+      <button data-view="orders" class="rail-link"><i class="fa-solid fa-file-invoice"></i><span class="rail-label">Process Orders</span></button>
+      <button data-view="reorder" class="rail-link"><i class="fa-solid fa-cart-shopping"></i><span class="rail-label">Reorder List</span></button>
+      <button data-view="alerts" class="rail-link"><i class="fa-solid fa-bell"></i><span class="rail-label">Alerts</span><span id="alert-count" class="badge" hidden>0</span></button>
+      <button data-view="history" class="rail-link"><i class="fa-solid fa-clock-rotate-left"></i><span class="rail-label">History</span></button>
+      <button data-view="labels" class="rail-link"><i class="fa-solid fa-tags"></i><span class="rail-label">Print Labels</span></button>
+      <button data-view="trash" class="rail-link"><i class="fa-solid fa-trash-can"></i><span class="rail-label">Trash</span></button>
+      <button class="rail-link theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><i class="fa-solid fa-moon" aria-hidden="true"></i><span class="rail-label">Dark mode</span></button>
+    </nav>
+    <div class="rail-foot"><div class="rail-status"><span class="assistant-online-dot"></span> Railway workspace</div><small>Live size-wise inventory · changes are audited</small><button id="logout-button" class="rail-logout" type="button" hidden><i class="fa-solid fa-right-from-bracket"></i> Sign out</button></div>
+  </aside>
+
+  <main id="stage" class="stage">
+    <div class="workspace-topbar"><div class="workspace-breadcrumb"><i class="fa-solid fa-sparkles"></i><span>MYRAA WORKSPACE</span><span class="workspace-env">CLOUD EDITION</span></div><div class="workspace-top-actions"><button id="workspace-ask-myraa" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> Ask MYRAA</button><button id="workspace-photo-search" type="button"><i class="fa-solid fa-camera"></i> Photo search</button></div></div>
+
+    <!-- ================= DASHBOARD ================= -->
+    <section id="view-dashboard" class="view is-active">
+      <header class="view-head">
+        <div>
+          <h1>Dashboard</h1>
+          <p class="sub">Every design, every size. "Not counted" means nobody has entered its stock yet.</p>
+        </div>
+      </header>
+
+      <section class="dashboard-hero" aria-label="MYRAA inventory workspace">
+        <div class="dashboard-hero-copy"><span class="hero-eyebrow"><i class="fa-solid fa-circle-check"></i> SMART CLOTHING INVENTORY</span><h2>A clearer view.<br>A smarter workday.</h2><p>Every size, every order, every decision — together with MYRAA AI.</p><div class="hero-cta"><button type="button" id="hero-ask-myraa" class="btn-primary"><i class="fa-solid fa-wand-magic-sparkles"></i> Ask MYRAA</button><button type="button" id="hero-photo-search" class="btn-ghost"><i class="fa-solid fa-camera"></i> Find by photo</button></div></div>
+        <div class="dashboard-hero-photo" aria-hidden="true"></div>
+    </section>
+      <div id="summary-row" class="summary-row"></div>
+
+      <div class="filter-bar">
+        <input id="search-box" type="text" placeholder="Search SKU, product name or size…" class="input input-grow">
+        <select id="status-filter" class="input">
+          <option value="">All statuses</option>
+          <option value="UNCOUNTED">Not counted</option>
+          <option value="OUT">Out of stock</option>
+          <option value="LOW">Low stock</option>
+          <option value="OK">In stock</option>
+        </select>
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr><th class="col-img"></th><th>SKU</th><th>Product</th><th>Size</th><th class="num">Stock</th><th class="num hide-sm">Alert at</th><th>Status</th></tr>
+          </thead>
+          <tbody id="inventory-body"></tbody>
+        </table>
+      </div>
+        <div class="panel chart-panel">
+        <div class="chart-head">
+          <h2>Top Movers</h2>
+          <select id="movers-days" class="input">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </div>
+        <div id="movers-chart" class="chart-box"><p class="hint">Loading…</p></div>
+      </div>
+
+      <div class="pager">
+        <button id="pg-prev" class="btn-secondary pager-btn" type="button">← Previous</button>
+        <span id="pg-info"></span>
+        <button id="pg-next" class="btn-secondary pager-btn" type="button">Next →</button>
+      </div>
+    </section>
+
+    <!-- ================= PRODUCTS ================= -->
+    <section id="view-products" class="view">
+      <header class="view-head">
+        <div><h1>Products</h1><p class="sub">Find a design, open it, manage every size from one place.</p></div>
+        <button id="open-add-product" class="btn-primary"><i class="fa-solid fa-plus"></i> Add Product</button>
+      </header>
+      <input id="product-search" type="text" placeholder="Search by SKU or product name…" class="input" style="margin-bottom:16px;">
+      <div id="product-result-count" class="hint" style="margin:-4px 0 12px 2px;"></div>
+      <div id="product-cards" class="card-grid"></div>
+      <div class="pager"><button id="products-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="products-page-info"></span><button id="products-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+      <p id="product-search-hint" class="hint center">Type at least 2 characters to search your catalog.</p>
+    </section>
+
+    <!-- ================= PRODUCT DETAIL ================= -->
+    <section id="view-detail" class="view">
+      <button id="detail-back" class="link-btn" type="button">← Back to Products</button>
+      <div id="detail-content"></div>
+    </section>
+
+    <!-- ================= SCAN & RECOUNT ================= -->
+    <section id="view-scan" class="view">
+      <header class="view-head"><div><h1>Scan &amp; Recount</h1><p class="sub">A product QR or product barcode opens every size. A size barcode opens only that size. Search a design to update its size-wise stock.</p></div></header>
+
+      <div class="two-col">
+        <div class="panel">
+          <h2>Camera Scan</h2>
+          <p class="hint">Product QR: open and update every size. Barcode: open and update only that size. Phone camera and scanner guns are supported.</p>
+          <div id="scan-reader" class="scan-frame"></div>
+          <button id="scan-toggle" type="button" class="btn-secondary">Start Camera</button>
+          <div id="scan-msg" class="msg"></div>
+        </div>
+        <div id="manual-lookup-form" class="panel">
+          <h2>Type Instead</h2>
+          <p class="hint">Search by product name, colour, or SKU. All sizes appear below with stock update fields.</p>
+          <label class="field">Product name / design<input id="manual-product-search" name="product" placeholder="Type a product name, colour, or SKU…" class="input" autocomplete="off"></label>
+          <div id="manual-product-results" class="manual-product-results" role="region" aria-label="Matching products and size stock" hidden></div>
+        </div>
+      </div>
+      <div id="scan-result" class="panel" hidden style="margin-top:16px;"></div>
+    </section>
+
+    <!-- ============== VISUAL PRODUCT SEARCH ============== -->
+    <section id="view-visual" class="view">
+      <header class="view-head"><div><h1>Visual Product Search</h1><p class="sub">Find a catalog design from a photo. Review the image match and live size-wise stock before opening the product.</p></div></header>
+      <section class="panel visual-scanner-panel" aria-labelledby="visual-scan-title">
+        <div class="visual-scan-head"><div><h2 id="visual-scan-title"><i class="fa-solid fa-camera"></i> Search by product photo</h2><p class="hint">Take a clear photo or upload one. The app matches it with saved catalog photos and shows current stock from the database.</p></div><span class="visual-safe-note">Photo search does not change stock</span></div>
+        <div class="visual-scan-controls">
+          <button id="visual-camera-toggle" type="button" class="btn-secondary"><i class="fa-solid fa-camera"></i> Open camera</button>
+          <button id="visual-capture" type="button" class="btn-primary" disabled><i class="fa-solid fa-camera-retro"></i> Take photo</button>
+          <label class="btn-ghost visual-upload-label"><i class="fa-solid fa-image"></i> Upload photo<input id="visual-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
+        </div>
+        <div id="visual-camera-wrap" class="visual-camera-wrap" hidden><video id="visual-camera" playsinline muted></video></div>
+        <div id="visual-preview-wrap" class="visual-preview-wrap" hidden><img id="visual-preview" alt="Selected product search photo"><button id="visual-clear" type="button" class="btn-ghost">Choose another photo</button></div>
+        <div id="visual-runtime-status" class="visual-runtime-status" role="status" aria-live="polite">Checking photo search setup…</div>
+        <div id="visual-scan-msg" class="msg" role="status"></div>
+        <div id="visual-results" class="visual-results" hidden></div>
+      </section>
+    </section>
+
+    <!-- ================= BULK STOCK COUNT ================= -->
+    <section id="view-bulk" class="view">
+      <header class="view-head"><div><h1>Bulk Stock Count</h1><p class="sub">Count the whole hub on a sheet, then load every number in one go.</p></div></header>
+      <div class="two-col">
+        <div class="panel">
+          <h2>1. Download the count sheet</h2>
+          <p class="hint">The sheet always contains your current catalog and sizes. <strong>Count</strong> is pre-filled with the latest known stock; replace it with your physical count. Add new SKU + Size rows anytime.</p>
+          <label class="check-row"><input type="checkbox" id="bulk-only-uncounted"> Only sizes not counted yet</label>
+          <a id="bulk-download" href="/api/inventory/count-sheet?only_uncounted=false" download class="btn-secondary">Download count sheet</a>
+        </div>
+        <div class="panel">
+          <h2>2. Upload the filled sheet</h2>
+          <p class="hint">Every filled row sets that size's stock. Existing sizes update automatically; a new SKU + Size row creates the product/size automatically.</p>
+          <label id="bulk-dropzone" class="dropzone">
+            <input type="file" id="bulk-file-input" accept=".xlsx,.xls,.csv" hidden>
+            <div class="dropzone-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div><div><strong>Click to choose</strong> the filled count sheet</div>
+          </label>
+        </div>
+      </div>
+      <div id="bulk-result" style="margin-top:16px;"></div>
+    </section>
+
+    <!-- ================= ORDERS ================= -->
+    <section id="view-orders" class="view">
+      <header class="view-head"><div><h1>Process Orders</h1><p class="sub">Upload marketplace orders. Dispatch deducts only counted stock that is ready; any remaining quantity stays pending.</p></div><div class="order-head-actions"><button id="refresh-order-readiness" class="btn-secondary" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh readiness</button><button id="retry-order-matches" class="btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> Retry SKU matching</button></div></header>
+      <div class="panel" style="text-align:center;">
+        <label id="dropzone" class="dropzone">
+          <input type="file" id="order-file-input" accept=".xlsx,.xls,.csv" hidden>
+          <div class="dropzone-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div><div><strong>Click to choose</strong> the orders file</div>
+          <div class="dropzone-hint">Reads your marketplace's Seller SKU / SKU Code directly, or SKU + Size. No quantity column means 1 piece per row.</div>
+        </label>
+      </div>
+      <div id="order-history" style="margin-top:16px;"></div>
+      <div id="orders-pager" class="pager" hidden><button id="orders-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+      <div id="upload-result" style="margin-top:16px;"></div>
+    </section>
+
+    <!-- ================= REORDER LIST ================= -->
+    <section id="view-reorder" class="view">
+      <header class="view-head">
+        <div><h1>Picklist / Reorder Shortage</h1><p class="sub">Pending orders reserve current stock. Dispatched quantities are shown separately because stock was already deducted.</p></div>
+        <div class="reorder-actions"><input id="reorder-part" class="input reorder-part" placeholder="Search SKU, design, color or size…" aria-label="Search picklist"><a id="export-reorder" href="/api/reorder-list/export" download class="btn-primary">Export Picklist</a></div>
+      </header>
+      <p id="reorder-note" class="hint">Pending and shipped sizes are shown. Restock = max(Pending orders − physical stock, 0); old negative stock deficits remain included until counted.</p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>SKU</th><th>Size</th><th class="num">Current stock</th><th class="num">Pending orders</th><th class="num">Dispatched</th><th class="num">To restock</th></tr></thead>
+          <tbody id="reorder-body"></tbody>
+        </table>
+      </div>
+      <div class="pager"><button id="reorder-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="reorder-page-info"></span><button id="reorder-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+    </section>
+
+    <!-- ================= ALERTS ================= -->
+    <section id="view-alerts" class="view">
+      <header class="view-head"><div><h1>Alerts</h1><p class="sub">Design aur size wise alerts. Stock ko MYRAA se voice ya chat mein update karein.</p></div>
+      </header>
+      <input id="alerts-search" type="search" placeholder="Search by design, SKU, size or alert type…" class="input alerts-search" aria-label="Search alerts">
+      <p id="alerts-note" class="hint"></p>
+      <div id="alerts-list" class="stack-list"></div>
+      <div class="pager alerts-pager"><button id="alerts-prev" class="btn-ghost" type="button" aria-label="Previous alert page">← Previous</button><span id="alerts-page-info" aria-live="polite"></span><button id="alerts-next" class="btn-ghost" type="button" aria-label="Next alert page">Next →</button></div>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section id="view-history" class="view">
+      <header class="view-head"><div><h1>History</h1><p class="sub">Every stock change, newest first — who/what/when.</p></div></header>
+      <input id="history-search" type="text" placeholder="Search by SKU or product name…" class="input" style="margin-bottom:12px;">
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>When</th><th>SKU</th><th class="hide-sm">Product</th><th>Size</th><th class="num">Change</th><th class="num">Balance</th><th class="hide-sm">Type</th><th class="hide-sm">Note</th></tr></thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+      <div class="pager"><button id="hist-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="hist-page-info"></span><button id="hist-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+    </section>
+
+    <!-- ================= PRINT LABELS ================= -->
+    <section id="view-labels" class="view">
+      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Download one compact label per design with both a QR code and barcode. Either scan opens every size together.</p></div></header>
+      <div class="panel" style="max-width:520px;">
+        <label class="field">Find a design<input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input"></label>
+        <div id="label-results" class="stack-list" style="margin-top:8px;"></div>
+        <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+        <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+          <div id="label-selected-name" class="bold"></div>
+          <p id="label-size-summary" class="hint"></p>
+          <div class="product-label-actions print-label-options" aria-label="Download product labels">
+            <a id="product-barcode-download" href="#" download class="btn-secondary product-label-link"><i class="fa-solid fa-barcode"></i><span>Barcode</span></a>
+            <a id="product-qr-download" href="#" download class="btn-secondary product-label-link"><i class="fa-solid fa-qrcode"></i><span>QR code</span></a>
+            <a id="product-combo-download" href="#" download class="btn-primary product-label-link"><i class="fa-solid fa-tags"></i><span>Both</span></a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= TRASH ================= -->
+    <section id="view-trash" class="view">
+      <header class="view-head"><div><h1>Trash</h1><p class="sub">Deleted designs stay here until restored or removed for good.</p></div></header>
+      <div id="trash-list" class="card-grid"></div>
+      <p id="trash-empty" class="hint center" hidden>Trash is empty.</p>
+      <div class="pager"><button id="trash-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="trash-page-info"></span><button id="trash-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ================= ADD PRODUCT MODAL ================= -->
+<div id="add-product-modal" class="modal-backdrop" hidden>
+  <div class="modal-card add-product-card">
+    <div class="modal-head"><h2>Add Product</h2><button id="close-add-product" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button></div>
+    <div class="add-mode-tabs" role="tablist" aria-label="Add products">
+      <button type="button" class="add-mode-tab is-active" data-add-mode="single" role="tab" aria-selected="true"><i class="fa-solid fa-box"></i> Single product</button>
+      <button type="button" class="add-mode-tab" data-add-mode="bulk" role="tab" aria-selected="false"><i class="fa-solid fa-file-excel"></i> Bulk from Excel</button>
+    </div>
+    <form id="add-product-form">
+      <div class="product-main-fields">
+        <div class="photo-pick">
+          <label class="photo-pick-box" id="add-photo-box" role="button" tabindex="0" aria-label="Select product photos">
+            <span id="add-photo-placeholder"><i class="fa-solid fa-camera"></i><br><strong>Select product photos</strong><small>First selected photo becomes the main image</small></span>
+            <img id="add-photo-preview" alt="Front view preview" hidden>
+            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
+          </label>
+          <div class="photo-pick-note"><strong id="photo-selection-count">0 of 8 photos</strong><span>Select several photos together; the first is used as the main product image.</span></div>
+          <div id="add-photo-thumbnails" class="add-photo-thumbnails" aria-label="Selected product photo previews" aria-live="polite"></div>
+        </div>
+        <div class="product-fields">
+          <div class="product-photo-angles" aria-label="Product photo angles">
+            <label class="photo-angle-card" for="add-back-photo-input"><span class="photo-angle-thumb" id="add-back-photo-thumb"><i class="fa-solid fa-shirt"></i></span><span><strong>Back photo</strong><small id="add-back-photo-label">Add back view</small></span><input type="file" id="add-back-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
+            <label class="photo-angle-card" for="add-closeup-photo-input"><span class="photo-angle-thumb" id="add-closeup-photo-thumb"><i class="fa-solid fa-magnifying-glass-plus"></i></span><span><strong>Close-up</strong><small id="add-closeup-photo-label">Fabric or detail</small></span><input type="file" id="add-closeup-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
+            <label class="photo-angle-card" for="add-extra-photo-input"><span class="photo-angle-thumb" id="add-extra-photo-thumb"><i class="fa-solid fa-images"></i></span><span><strong>Other views</strong><small id="add-extra-photo-label">Add more views</small></span><input type="file" id="add-extra-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+          </div>
+          <p class="hint product-photo-hint">Use clear front, back, and fabric-detail photos. Up to 8 photos can help visual product search.</p>
+          <label class="field">SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
+          <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
+          <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>
+        </div>
+      </div>
+
+      <h3 class="sub-head">Sizes &amp; starting stock</h3>
+      <div id="size-rows" class="size-rows"></div>
+      <button type="button" id="add-size-row" class="link-btn">+ Add another size</button>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn-primary">Add Product</button>
+        <div id="add-product-msg" class="msg"></div>
+      </div>
+    </form>
+    <section id="bulk-product-panel" class="bulk-product-panel" hidden>
+      <div class="bulk-product-intro">
+        <div class="bulk-product-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+        <div><h3>Add your full catalog at once</h3><p>One row per size. Repeated design SKUs group automatically; a final size suffix like <b>-XL</b> is detected and grouped too. Add photos later from Edit.</p></div>
+      </div>
+      <a id="bulk-product-template" class="template-download" href="/api/products/bulk-template"><span class="template-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span><strong>Download Excel format</strong><small>Includes column guide and import rules</small></span><i class="fa-solid fa-arrow-down download-arrow"></i></a>
+      <label id="bulk-product-dropzone" class="bulk-product-dropzone">
+        <input type="file" id="bulk-product-file" accept=".xlsx,.xls,.csv" hidden>
+        <span class="bulk-upload-icon"><i class="fa-solid fa-cloud-arrow-up"></i></span>
+        <strong id="bulk-product-file-title">Choose your filled Excel file</strong>
+        <small id="bulk-product-file-meta">.xlsx, .xls or .csv · up to 20,000 rows</small>
+      </label>
+      <div class="bulk-product-actions"><span class="hint">Products with existing SKUs are skipped safely.</span><button type="button" id="bulk-product-submit" class="btn-primary" disabled><i class="fa-solid fa-sparkles"></i> Import products</button></div>
+      <div id="bulk-product-result" aria-live="polite"></div>
+    </section>
+  </div>
+</div>
+
+<!-- ================= CONFIRM MODAL ================= -->
+<div id="confirm-modal" class="modal-backdrop" hidden>
+  <div class="modal-card modal-sm">
+    <h2 id="confirm-title">Are you sure?</h2>
+    <p id="confirm-body" class="hint"></p>
+    <div class="modal-actions-end">
+      <button id="confirm-cancel" class="btn-ghost">Cancel</button>
+      <button id="confirm-ok" class="btn-danger">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div id="assistant-widget" class="assistant-widget">
+  <aside id="assistant-photo-preview" class="assistant-photo-preview" aria-label="MYRAA product photo preview" hidden></aside>
+  <section id="assistant-panel" class="assistant-panel" aria-label="MYRAA AI assistant" hidden>
+    <header class="assistant-panel-head">
+      <span class="assistant-avatar"><i class="fa-solid fa-sparkles" aria-hidden="true"></i></span>
+      <div class="assistant-head-copy"><strong>MYRAA · Gemini AI</strong><small><span class="assistant-online-dot"></span><span id="assistant-state" aria-live="polite">Checking Railway cloud AI…</span></small><small class="assistant-powered">Gemini API · hosted on Railway</small></div>
+      <button id="assistant-new-chat" class="assistant-head-btn" type="button" aria-label="Start a new conversation" title="New conversation"><i class="fa-solid fa-plus"></i></button>
+      <button id="assistant-history-button" class="assistant-head-btn" type="button" aria-label="Conversation history" title="Conversation history"><i class="fa-solid fa-clock-rotate-left"></i></button>
+      <button id="assistant-close" class="assistant-head-btn" type="button" aria-label="Close assistant and end voice call" title="Close MYRAA"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+    </header>
+    <div id="assistant-voice-container" class="assistant-voice-container" hidden></div>
+    <div class="assistant-toolbar" role="group" aria-label="MYRAA features">
+      <button id="assistant-voice-button" type="button" aria-pressed="false"><i class="fa-solid fa-microphone"></i> Speak</button>
+      <label class="assistant-lang-label"><i class="fa-solid fa-globe"></i><select id="assistant-language" aria-label="Voice recognition language"><option value="hi-IN">Hindi / Hinglish</option><option value="en-IN">English</option></select></label>
+      <button id="assistant-identify-photo" type="button"><i class="fa-solid fa-camera"></i> Identify photo</button>
+      <button id="assistant-speech-toggle" type="button" title="Speak assistant replies" aria-pressed="false"><i class="fa-solid fa-volume-xmark"></i></button>
+    </div>
+    <div id="assistant-voice-feedback" class="assistant-voice-feedback" role="status" aria-live="polite"></div>
+    <div id="assistant-history-list" class="assistant-history-list" hidden></div>
+    <div id="assistant-messages" class="assistant-messages" aria-live="polite"></div>
+    <form id="assistant-chat-form" class="assistant-chat-form">
+      <input id="assistant-chat-input" type="text" maxlength="500" autocomplete="off" placeholder="Hindi, English ya Hinglish mein kuch bhi poochhein…" aria-label="Chat with MYRAA">
+      <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
+    </form>
+    <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button><button id="assistant-automation-help" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> आवाज़ के आदेश</button></div>
+    <p class="assistant-footnote">Inventory aur roz ki baat · बदलाव से पहले पुष्टि · WhatsApp draft खोलकर खुद भेजें</p>
+  </section>
+  <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open MYRAA Inventory Assistant" title="Talk with MYRAA" aria-expanded="false">
+    <i class="fa-solid fa-robot" aria-hidden="true"></i><span class="assistant-launcher-dot"></span><span class="assistant-launcher-label">MYRAA</span>
+  </button>
+</div>
+
+<div id="add-size-modal" class="modal-backdrop" hidden>
+  <section class="modal-card modal-sm add-size-card" role="dialog" aria-modal="true" aria-labelledby="add-size-title">
+    <header class="modal-head"><div><h2 id="add-size-title">Add size</h2><p id="add-size-product-name" class="hint"></p></div><button id="close-add-size" class="icon-btn" type="button" aria-label="Close"><i class="fa-solid fa-xmark"></i></button></header>
+    <form id="add-size-form">
+      <label class="field">Size / Variant<input id="new-size-value" class="input" maxlength="20" required placeholder="e.g. S, XXL, 32"></label>
+      <div class="add-size-fields">
+        <label class="field">Starting stock<input id="new-size-stock" class="input" type="number" min="0" value="0" inputmode="numeric"></label>
+        <label class="field">Alert below<input id="new-size-threshold" class="input" type="number" min="0" value="5" inputmode="numeric"></label>
+        <label class="field">Target stock<input id="new-size-target" class="input" type="number" min="0" value="20" inputmode="numeric"></label>
+      </div>
+      <p id="add-size-msg" class="msg" aria-live="polite"></p>
+      <footer class="modal-actions-end"><button id="cancel-add-size" class="btn-ghost" type="button">Cancel</button><button id="submit-add-size" class="btn-primary" type="submit"><i class="fa-solid fa-plus"></i> Add size</button></footer>
+    </form>
+  </section>
+</div>
+
+<input id="assistant-photo-input" type="file" accept="image/*" hidden>
+<input id="assistant-identify-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+<div id="assistant-photo-lightbox" class="assistant-photo-lightbox" role="dialog" aria-modal="true" aria-label="Product photo viewer" hidden>
+  <div class="assistant-photo-lightbox-head"><strong id="assistant-photo-lightbox-title">Product photo</strong><button id="assistant-photo-lightbox-close" type="button" aria-label="Close photo viewer"><i class="fa-solid fa-xmark"></i></button></div>
+  <div id="assistant-photo-viewport" class="assistant-photo-viewport" tabindex="0" aria-label="Use mouse wheel or plus and minus keys to zoom the photo"><img id="assistant-photo-zoom-image" alt="Product photo"></div>
+  <div class="assistant-photo-controls"><button type="button" data-photo-zoom="out" aria-label="Zoom out">−</button><button type="button" data-photo-zoom="reset">100%</button><button type="button" data-photo-zoom="in" aria-label="Zoom in">+</button><button id="assistant-photo-change" type="button"><i class="fa-solid fa-camera"></i> Change photo</button></div>
+</div>
+
+<section id="myraa-login" class="myraa-login" role="dialog" aria-modal="true" aria-label="Inventory sign in" hidden>
+  <form id="myraa-login-form" class="myraa-login-card"><div class="login-mark"><i class="fa-solid fa-shirt"></i></div><h2>Welcome to MYRAA</h2><p>Sign in to your secured Railway inventory workspace.</p><label for="myraa-login-password">Workspace password</label><input id="myraa-login-password" type="password" autocomplete="current-password" required placeholder="Enter workspace password"><p id="myraa-login-error" class="login-error" aria-live="polite"></p><button type="submit" class="btn-primary"><i class="fa-solid fa-lock-open"></i> Sign in</button></form>
+</section>
+<div id="app-loading-indicator" class="app-loading-indicator" role="status" aria-live="polite" aria-label="Loading app data"><span></span></div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="app.js?v=myraa-production-2"></script>
+</body>
+</html>

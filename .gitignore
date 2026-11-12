@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.db
+venv/
+.venv/
+node_modules/
+**/node_modules/
+companion/myraa/dist/
+companion/myraa/agent_dist/
+companion/myraa/release/
+backend/static/product_images/*
+!backend/static/product_images/.gitkeep
+.env
+.env.*
+!.env.example

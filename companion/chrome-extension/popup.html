@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MYRAA WhatsApp Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>MYRAA · Browser + WhatsApp</h1>
+    <section class="browser-access">
+      <strong>Same-browser control</strong>
+      <p>Allow MYRAA to open, read, and use tabs in this Chrome window. It opens results in a new tab, so your Inventory app and voice session stay open.</p>
+      <button id="enable-browser-access" class="primary" type="button">Enable browser access</button>
+      <p id="browser-access-status" role="status" aria-live="polite">One-time Chrome permission required.</p>
+    </section>
+    <h2>WhatsApp text sharing</h2>
+    <p class="privacy">Only the text you select in the open WhatsApp Web chat is shared. Review it here, then share it into MYRAA. Nothing is sent to MYRAA until you press Send there; WhatsApp messages are never sent automatically.</p>
+    <button id="read-selection" type="button">Read selected text</button>
+    <label for="selected-text">Review or edit selection <span id="counter">0/350</span></label>
+    <textarea id="selected-text" maxlength="350" rows="7" placeholder="Select a message in WhatsApp Web, then click Read selected text."></textarea>
+    <button id="share-with-myraa" class="primary" type="button" disabled>Share with MYRAA</button>
+    <p id="status" role="status" aria-live="polite">Open WhatsApp Web and select one message first.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
