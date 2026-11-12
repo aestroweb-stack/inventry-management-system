@@ -82,6 +82,18 @@ run_case('preparation error never appears as confirmed', [TEXT,FUNCTION, {'parts
          [None,'prepare_update_product',None], False, tool_result={'status':'error','message':'Product not found'})
 
 assert svc._explicit_product_rename_requested(PROMPT)
+assert svc._explicit_product_rename_requested(
+    f"For the existing product SKU {SKU}, update ONLY its product name to "
+    "'MYRAA MCP VERIFIED KURTA'. Use the inventory update tool and show "
+    "me the confirmation preview. Do not change any other SKU or stock."
+)
+assert svc._explicit_product_rename_requested(
+    f"For the existing product SKU {SKU}, update ONLY its product name to "
+    "'MYRAA MCP VERIFIED KURTA'. Leave all other SKU details and stock counts unchanged."
+)
+assert not svc._explicit_product_rename_requested(
+    f"Do not update SKU {SKU} product name to MYRAA MCP VERIFIED KURTA."
+)
 assert not svc._explicit_product_rename_requested(f'Do not rename SKU {SKU} product name to ABC')
 assert not svc._explicit_product_rename_requested(f'What is the name of SKU {SKU}?')
 assert not svc._explicit_product_rename_requested('Change product name to ABC')

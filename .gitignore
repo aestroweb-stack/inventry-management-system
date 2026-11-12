@@ -13,3 +13,5 @@ backend/static/product_images/*
 .env
 .env.*
 !.env.example
+.vscode
+
