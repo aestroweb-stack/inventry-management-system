@@ -513,3 +513,162 @@ body.myraa-open .stage { padding-right:clamp(399px,29vw,456px); }
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { animation-duration:.001ms !important; transition-duration:.001ms !important; scroll-behavior:auto !important; }
 }
+
+
+/* MYRAA v4 — 3D Lady Floating Assistant */
+
+#assistant-widget:has(#assistant-panel[hidden]) {
+  top: auto !important;
+  right: 20px !important;
+  bottom: max(18px, env(safe-area-inset-bottom)) !important;
+  left: auto !important;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+}
+
+#assistant-launcher {
+  width: auto;
+  min-width: 166px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 4px 20px 4px 4px;
+  border: 1.5px solid #78e0bb;
+  border-radius: 999px;
+  background: linear-gradient(
+    120deg, #00604d, #087c60 58%, #0d9a70
+  );
+  color: #fff;
+  box-shadow: 0 12px 32px rgba(0,69,53,.24);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+/* Hide existing robot */
+#assistant-launcher > .fa-robot {
+  display: none !important;
+}
+
+/* MYRAA Character */
+#assistant-launcher::before {
+  content: "";
+  display: block;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.90);
+  background: #bfe9d1
+    url("assets/myraa-fab-avatar.webp")
+    center 11% / cover no-repeat;
+  box-shadow: 0 3px 11px rgba(0,36,28,.24);
+}
+
+#assistant-launcher .assistant-launcher-label {
+  position: static;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: .025em;
+  line-height: 1;
+}
+
+#assistant-launcher .assistant-launcher-dot {
+  position: absolute;
+  top: 8px;
+  right: auto;
+  left: 51px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #55e8a4;
+}
+
+#assistant-launcher:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 17px 39px rgba(0,69,53,.31);
+}
+
+#assistant-launcher:active {
+  transform: scale(.98);
+}
+
+#assistant-launcher:focus-visible {
+  outline: 3px solid #35d7a2;
+  outline-offset: 4px;
+}
+
+/* Dark Mode */
+:root[data-theme="dark"] #assistant-launcher {
+  border-color: #4ac89e;
+  background: linear-gradient(
+    120deg, #04362f, #075a49 60%, #0a7759
+  );
+  box-shadow: 0 15px 35px rgba(0,9,8,.50);
+}
+
+:root[data-theme="dark"] #assistant-launcher::before {
+  border-color: #a8eed0;
+  background-color: #315d50;
+}
+
+/* Speaking Animation */
+#assistant-widget.is-speaking
+#assistant-launcher::before {
+  animation: myraa-avatar-glow
+    1.25s ease-in-out infinite alternate;
+}
+
+@keyframes myraa-avatar-glow {
+  from {
+    box-shadow: 0 3px 11px rgba(0,36,28,.24);
+  }
+  to {
+    box-shadow: 0 0 0 5px rgba(78,226,159,.30);
+  }
+}
+
+/* Mobile Responsive */
+@media (max-width: 760px) {
+  #assistant-widget:has(#assistant-panel[hidden]) {
+    top: auto !important;
+    bottom: max(14px, env(safe-area-inset-bottom))
+      !important;
+    right: 12px !important;
+    left: auto !important;
+  }
+
+  #assistant-launcher {
+    min-width: 147px;
+    height: 58px;
+    padding: 4px 15px 4px 4px;
+    gap: 8px;
+  }
+
+  #assistant-launcher::before {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+  }
+
+  #assistant-launcher .assistant-launcher-label {
+    font-size: 13px;
+  }
+
+  #assistant-launcher .assistant-launcher-dot {
+    left: 45px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #assistant-launcher {
+    transition: none;
+  }
+
+  #assistant-widget.is-speaking
+  #assistant-launcher::before {
+    animation: none;
+  }
+}
