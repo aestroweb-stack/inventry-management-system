@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -32,6 +33,7 @@ _rate_lock = Lock()
 SYSTEM_INSTRUCTION = """You are MYRAA, a warm, concise assistant for an Indian clothing inventory business.
 Reply in the user's language (Hindi, English, or Hinglish) and handle ordinary daily-life conversation naturally.
 For any inventory, orders, dispatch, reorder, or sales fact, use the live tools; never invent data.
+When a user explicitly requests a product, size, or stock change and gives enough detail, CALL the matching prepare_* tool immediately. Do not merely promise to perform an action in text. If required information is missing, ask one concise question rather than guessing.
 You may read inventory and prepare a change, but MUST NOT commit it. For product, size, and stock CRUD use the
 dedicated prepare_* tools when possible, or prepare_inventory_action for other supported actions.
 For every change, explain the exact preview and wait for the user to press the app's Confirm change button. A user saying yes in
@@ -231,13 +233,46 @@ async def _gemini_post_with_retry(url: str, headers: dict[str, str], body: dict[
     raise RuntimeError("Gemini cloud service did not return a response.")
 
 
-async def _generate(contents: list[dict[str, Any]], api_key: str, language: str = "auto") -> dict[str, Any]:
+def _explicit_product_rename_requested(text: str) -> bool:
+    """Recognize only unambiguous SKU-specific rename instructions for one safe retry.
+
+    This only authorizes a PREPARE tool call, never a database commit. Unclear
+    prompts and questions stay in normal AUTO mode rather than forcing a change.
+    """
+    normalized = str(text or "").casefold().strip()
+    if not re.search(r"\bsku\s*[:#-]?\s*[a-z0-9][a-z0-9_.-]{1,63}\b", normalized):
+        return False
+    if re.search(r"\b(?:do not|don't|dont|never|without)\s+(?:update|rename|change)\b", normalized):
+        return False
+    english = bool(re.search(
+        r"\b(?:rename|update|change)\b.{0,70}\b(?:name|title)\b.{0,30}\b(?:to|as)\b",
+        normalized, re.DOTALL,
+    ))
+    roman_hindi = "naam" in normalized and bool(re.search(r"\b(?:badlo|badal|karo)\b", normalized))
+    hindi = "नाम" in normalized and any(token in normalized for token in ("बदल", "रख", "करो"))
+    return english or roman_hindi or hindi
+
+
+async def _generate(
+    contents: list[dict[str, Any]], api_key: str, language: str = "auto",
+    *, force_prepare_tool: str | None = None,
+) -> dict[str, Any]:
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION + ("\n" + LANGUAGE_STYLE[language] if language in LANGUAGE_STYLE else "")}]},
         "contents": contents,
         "tools": [{"functionDeclarations": _TOOLS}],
         "generationConfig": {"maxOutputTokens": 4096, "thinkingConfig": {"thinkingLevel": "low"}},
     }
+    if force_prepare_tool is not None:
+        if force_prepare_tool != "prepare_update_product":
+            raise ValueError("Unsupported forced prepare tool")
+        # Gemini REST API: ANY requires a declared function call, restricted to
+        # this one PREPARE operation; confirmation remains a separate UI action.
+        body["toolConfig"] = {
+            "functionCallingConfig": {
+                "mode": "ANY", "allowedFunctionNames": [force_prepare_tool],
+            }
+        }
     response = await _gemini_post_with_retry(
         gemini_url(), {"x-goog-api-key": api_key, "content-type": "application/json"}, body
     )
@@ -273,13 +308,29 @@ async def _chat_gemini(messages: Any, language: str = "auto") -> dict[str, Any]:
         raise ValueError("Message is too long. Keep it under 1000 characters.")
 
     pending_action = None
-    for _ in range(MAX_TURNS):
-        model_content = await _generate(contents, api_key, language=language) if language in LANGUAGE_STYLE else await _generate(contents, api_key)
+    requested_rename = _explicit_product_rename_requested(contents[-1]["parts"][0]["text"])
+    tool_errors: list[str] = []
+    force_attempted = False
+    for turn in range(MAX_TURNS):
+        model_content = await _generate(contents, api_key, language=language)
         parts = model_content.get("parts") or []
         calls = [part["functionCall"] for part in parts if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)]
+        if not calls and requested_rename and not force_attempted:
+            # Lite models may do a read tool first, then answer with text
+            # rather than PREPARE. Retry only ONCE, including after reads.
+            # This only prepares a preview; no confirm tool is exposed to Gemini.
+            force_attempted = True
+            model_content = await _generate(
+                contents, api_key, language=language,
+                force_prepare_tool="prepare_update_product",
+            )
+            parts = model_content.get("parts") or []
+            calls = [part["functionCall"] for part in parts if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)]
         if not calls:
             text_parts = [str(part.get("text") or "") for part in parts if isinstance(part, dict) and part.get("text")]
             reply = "\n".join(text_parts).strip() or "Mujhe abhi jawab nahi mila. Dobara poochhein?"
+            if tool_errors and not pending_action:
+                reply = "Inventory action ka preview nahi ban saka: " + tool_errors[-1]
             return {"reply": reply[:4000], "pending_action": pending_action, "model": model_name(), "provider": "Gemini"}
 
         contents.append(model_content)
@@ -288,19 +339,32 @@ async def _chat_gemini(messages: Any, language: str = "auto") -> dict[str, Any]:
             name = str(call.get("name") or "")
             arguments = call.get("args") or {}
             result = await asyncio.to_thread(_execute_tool, name, arguments)
+            if result.get("status") == "error":
+                tool_errors.append(str(result.get("message") or "Unable to prepare change")[:240])
             if (name == "prepare_inventory_action" or name in _PREPARE_TOOLS) and result.get("status") == "awaiting_user_confirmation":
-                pending_action = {
-                    "confirmation_token": result.get("confirmation_token"),
-                    "action": result.get("action"),
-                    "details": result.get("details") or {},
-                    "expires_in_seconds": result.get("expires_in_seconds", 600),
-                }
+                # Only the first confirmed PREPARE can be offered to the user.
+                if pending_action is None:
+                    pending_action = {
+                        "confirmation_token": result.get("confirmation_token"),
+                        "action": result.get("action"),
+                        "details": result.get("details") or {},
+                        "expires_in_seconds": result.get("expires_in_seconds", 600),
+                    }
                 result = {key: value for key, value in result.items() if key != "confirmation_token"}
                 result["user_confirmation_required"] = True
             response = {"name": name, "response": {"result": result}}
             if call.get("id"):
                 response["id"] = call["id"]
             response_parts.append({"functionResponse": response})
+        # Once a preview is ready, DO NOT ask Gemini to explain it via an extra
+        # generateContent call. That costs quota and can fail with an unrelated 503.
+        if pending_action:
+            reply = (
+                "बदलाव का प्रीव्यू तैयार है। सही हो तो नीचे Confirm change दबाएँ।"
+                if language == "hi-IN" else
+                "I have prepared the change. Please review the details and press Confirm change to apply it."
+            )
+            return {"reply": reply, "pending_action": pending_action, "model": model_name(), "provider": "Gemini"}
         contents.append({"role": "user", "parts": response_parts})
 
     return {
