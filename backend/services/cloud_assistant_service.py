@@ -234,23 +234,44 @@ async def _gemini_post_with_retry(url: str, headers: dict[str, str], body: dict[
 
 
 def _explicit_product_rename_requested(text: str) -> bool:
-    """Recognize only unambiguous SKU-specific rename instructions for one safe retry.
+    """Require an affirmative, SKU-specific product rename before forcing PREPARE.
 
-    This only authorizes a PREPARE tool call, never a database commit. Unclear
-    prompts and questions stay in normal AUTO mode rather than forcing a change.
+    Only a signed PREPARE preview is allowed. A later safety sentence such as
+    'Do not change any other SKU or stock' must not cancel an affirmative
+    request in an earlier sentence. Conversely, 'Do not rename SKU X' must
+    never force a rename tool call.
     """
     normalized = str(text or "").casefold().strip()
-    if not re.search(r"\bsku\s*[:#-]?\s*[a-z0-9][a-z0-9_.-]{1,63}\b", normalized):
+    sku_pattern = r"\bsku\s*[:#-]?\s*[a-z0-9][a-z0-9_.-]{1,63}\b"
+    if not re.search(sku_pattern, normalized):
         return False
-    if re.search(r"\b(?:do not|don't|dont|never|without)\s+(?:update|rename|change)\b", normalized):
-        return False
-    english = bool(re.search(
+
+    english = re.compile(
         r"\b(?:rename|update|change)\b.{0,70}\b(?:name|title)\b.{0,30}\b(?:to|as)\b",
-        normalized, re.DOTALL,
-    ))
-    roman_hindi = "naam" in normalized and bool(re.search(r"\b(?:badlo|badal|karo)\b", normalized))
-    hindi = "नाम" in normalized and any(token in normalized for token in ("बदल", "रख", "करो"))
-    return english or roman_hindi or hindi
+        re.DOTALL,
+    )
+    negative = re.compile(
+        r"\b(?:do\s+not|don['’]t|dont|never|without|avoid|not\s+to)\b",
+    )
+    # Require SKU and the affirmative request to occur in the same sentence.
+    # This favors a safe false negative when the instruction is ambiguous.
+    for sentence in re.split(r"[.!?\n]+", normalized):
+        if not re.search(sku_pattern, sentence):
+            continue
+        for match in english.finditer(sentence):
+            # Negative instruction directly BEFORE this verb cancels it. An
+            # unrelated later negative sentence cannot cancel an earlier verb.
+            leading = sentence[:match.start()]
+            if not negative.search(leading):
+                return True
+        # Romanized Hindi / Hindi affirmative equivalents on same sentence.
+        if re.search(r"\bnaam\b", sentence) and re.search(r"\b(?:badlo|badal|karo)\b", sentence):
+            if not re.search(r"\b(?:mat|nahi|na)\s+(?:badlo|badal|karo)\b", sentence):
+                return True
+        if "नाम" in sentence and any(token in sentence for token in ("बदल", "रख", "करो")):
+            if "मत" not in sentence and "नहीं" not in sentence:
+                return True
+    return False
 
 
 async def _generate(
