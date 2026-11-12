@@ -4,10 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>MYRAA · AI Inventory Workspace</title>
+<meta name="theme-color" content="#005446">
+<link rel="icon" href="assets/myraa-favicon.svg" type="image/svg+xml">
 <script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
 <link rel="stylesheet" href="style.css?v=myraa-production-2">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <link rel="stylesheet" href="myraa-production.css?v=2">
+<link rel="stylesheet" href="myraa-signature-v3.css?v=3">
 </head>
 <body>
 
@@ -15,7 +18,7 @@
   <!-- Mobile top bar -->
   <header class="topbar">
     <button id="menu-toggle" class="icon-btn" aria-label="Menu"><i class="fa-solid fa-bars"></i></button>
-    <span class="topbar-title">Inventory</span>
+    <span class="topbar-title"><img src="assets/myraa-mark.svg" alt="" width="26" height="26"> MYRAA <small>Inventory</small></span>
     <button id="topbar-alerts" class="icon-btn" aria-label="Alerts">
       <i class="fa-solid fa-bell"></i><span id="alert-count-mobile" class="badge" hidden>0</span>
     </button>
@@ -26,8 +29,8 @@
 
   <aside id="sidebar" class="rail">
     <div class="rail-identity">
-      <span class="rail-identity-mark" aria-hidden="true"><i class="fa-solid fa-shirt"></i></span>
-      <span class="rail-identity-name"><strong>Inventory</strong><small>with AI assistant <em>MYRAA</em></small></span>
+      <span class="rail-identity-mark" aria-hidden="true"><img src="assets/myraa-mark.svg" alt="" width="48" height="48"></span>
+      <span class="rail-identity-name"><strong>MYRAA</strong><small>INVENTORY MANAGEMENT</small></span>
       <button id="sidebar-collapse" class="icon-btn rail-collapse" type="button" aria-label="Collapse sidebar" title="Collapse sidebar"><i class="fa-solid fa-chevron-left"></i></button>
     </div>
     <nav class="rail-nav">
@@ -44,11 +47,15 @@
       <button data-view="trash" class="rail-link"><i class="fa-solid fa-trash-can"></i><span class="rail-label">Trash</span></button>
       <button class="rail-link theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><i class="fa-solid fa-moon" aria-hidden="true"></i><span class="rail-label">Dark mode</span></button>
     </nav>
-    <div class="rail-foot"><div class="rail-status"><span class="assistant-online-dot"></span> Railway workspace</div><small>Live size-wise inventory · changes are audited</small><button id="logout-button" class="rail-logout" type="button" hidden><i class="fa-solid fa-right-from-bracket"></i> Sign out</button></div>
+    <div class="rail-foot"><div class="rail-status"><span class="assistant-online-dot"></span> Railway cloud · Connected</div><small>Inventory and AI operations</small><button id="logout-button" class="rail-logout" type="button" hidden><i class="fa-solid fa-right-from-bracket"></i> Sign out</button></div>
   </aside>
 
   <main id="stage" class="stage">
-    <div class="workspace-topbar"><div class="workspace-breadcrumb"><i class="fa-solid fa-sparkles"></i><span>MYRAA WORKSPACE</span><span class="workspace-env">CLOUD EDITION</span></div><div class="workspace-top-actions"><button id="workspace-ask-myraa" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> Ask MYRAA</button><button id="workspace-photo-search" type="button"><i class="fa-solid fa-camera"></i> Photo search</button></div></div>
+    <div class="workspace-topbar">
+      <div class="workspace-breadcrumb"><span class="workspace-brand"><i class="fa-solid fa-layer-group" aria-hidden="true"></i> MYRAA <span class="workspace-brand-muted">Inventory</span></span><span class="workspace-env"><i class="fa-solid fa-cloud"></i> RAILWAY CLOUD</span></div>
+      <label class="workspace-global-search" for="workspace-global-search"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input id="workspace-global-search" type="search" placeholder="Search products, SKUs or inventory…" autocomplete="off" aria-label="Search inventory"><kbd>/</kbd></label>
+      <div class="workspace-top-actions"><button id="workspace-ask-myraa" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> Ask MYRAA</button><button id="workspace-photo-search" type="button"><i class="fa-solid fa-camera"></i> Photo</button><button type="button" class="workspace-theme-switch theme-toggle" data-theme-toggle aria-label="Switch to dark mode" aria-pressed="false" title="Toggle theme"><i class="fa-solid fa-moon" aria-hidden="true"></i></button><span class="workspace-user-avatar" title="Secured inventory workspace">M</span></div>
+    </div>
 
     <!-- ================= DASHBOARD ================= -->
     <section id="view-dashboard" class="view is-active">
@@ -60,11 +67,35 @@
       </header>
 
       <section class="dashboard-hero" aria-label="MYRAA inventory workspace">
-        <div class="dashboard-hero-copy"><span class="hero-eyebrow"><i class="fa-solid fa-circle-check"></i> SMART CLOTHING INVENTORY</span><h2>A clearer view.<br>A smarter workday.</h2><p>Every size, every order, every decision — together with MYRAA AI.</p><div class="hero-cta"><button type="button" id="hero-ask-myraa" class="btn-primary"><i class="fa-solid fa-wand-magic-sparkles"></i> Ask MYRAA</button><button type="button" id="hero-photo-search" class="btn-ghost"><i class="fa-solid fa-camera"></i> Find by photo</button></div></div>
+        <div class="dashboard-hero-copy"><span class="hero-eyebrow"><i class="fa-solid fa-circle-check"></i> REAL-TIME INVENTORY · GEMINI AI</span><h2>Smarter fashion inventory<br><em>for modern retail.</em></h2><p>Every design, every size and every stock decision — beautifully organised in one workspace.</p><div class="hero-cta"><button type="button" id="hero-ask-myraa" class="btn-primary"><i class="fa-solid fa-wand-magic-sparkles"></i> Talk to MYRAA</button><button type="button" id="hero-photo-search" class="btn-ghost"><i class="fa-solid fa-camera"></i> Find by photo</button></div><div class="hero-trust"><span><i class="fa-solid fa-check"></i> Live stock</span><span><i class="fa-solid fa-check"></i> Size-wise accuracy</span><span><i class="fa-solid fa-check"></i> Smart insights</span></div></div>
         <div class="dashboard-hero-photo" aria-hidden="true"></div>
     </section>
       <div id="summary-row" class="summary-row"></div>
 
+      <div class="dashboard-analytics-grid">
+        <div class="panel chart-panel">
+          <div class="chart-head"><div><span class="section-eyebrow">LIVE INTELLIGENCE</span><h2><i class="fa-solid fa-chart-line"></i> Top Movers</h2><p class="hint">Best moving sizes from your actual stock transactions</p></div>
+            <select id="movers-days" class="input"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select>
+          </div>
+          <div id="movers-chart" class="chart-box"><p class="hint">Loading…</p></div>
+        </div>
+        <section class="panel stock-health-panel" aria-label="Stock status breakdown">
+          <div class="stock-health-head"><span class="section-eyebrow">SIZE-WISE OVERVIEW</span><h2>Stock health</h2><p class="hint">Live status of catalog size variants</p></div>
+          <div class="stock-health-chart" id="stock-health-chart" role="img" aria-label="Stock health loading"><div class="stock-health-center"><strong id="stock-health-total">—</strong><small>Size variants</small></div></div>
+          <div id="stock-health-legend" class="stock-health-legend"><span class="hint">Loading stock status…</span></div>
+        </section>
+        <aside class="panel dashboard-action-panel" aria-label="Inventory quick actions">
+          <div class="dashboard-action-heading"><span class="section-eyebrow">WORK SMARTER</span><h2>Quick actions</h2><p class="hint">Open the tools already in your workspace</p></div>
+          <div class="dashboard-action-grid">
+            <button type="button" data-myraa-nav="products" data-myraa-trigger="open-add-product"><i class="fa-solid fa-plus"></i><span>Add product</span></button>
+            <button type="button" data-myraa-nav="scan"><i class="fa-solid fa-barcode"></i><span>Scan stock</span></button>
+            <button type="button" data-myraa-nav="orders"><i class="fa-solid fa-cart-shopping"></i><span>Process orders</span></button>
+            <button type="button" data-myraa-nav="labels"><i class="fa-solid fa-tags"></i><span>Print labels</span></button>
+          </div>
+          <div class="dashboard-myraa-mini"><img src="assets/myraa-lady-portrait.webp" alt="MYRAA virtual inventory assistant" loading="lazy"><div><strong>Need a hand?</strong><small>Ask MYRAA about stock, products and orders.</small><button type="button" data-myraa-open>Ask MYRAA <i class="fa-solid fa-arrow-right"></i></button></div></div>
+        </aside>
+      </div>
+      <div class="dashboard-inventory-title"><div><span class="section-eyebrow">YOUR INVENTORY</span><h2><i class="fa-solid fa-boxes-stacked"></i> Live stock by size</h2></div><small>Search, filter and review current inventory</small></div>
       <div class="filter-bar">
         <input id="search-box" type="text" placeholder="Search SKU, product name or size…" class="input input-grow">
         <select id="status-filter" class="input">
@@ -84,18 +115,6 @@
           <tbody id="inventory-body"></tbody>
         </table>
       </div>
-        <div class="panel chart-panel">
-        <div class="chart-head">
-          <h2>Top Movers</h2>
-          <select id="movers-days" class="input">
-            <option value="7">Last 7 days</option>
-            <option value="30" selected>Last 30 days</option>
-            <option value="90">Last 90 days</option>
-          </select>
-        </div>
-        <div id="movers-chart" class="chart-box"><p class="hint">Loading…</p></div>
-      </div>
-
       <div class="pager">
         <button id="pg-prev" class="btn-secondary pager-btn" type="button">← Previous</button>
         <span id="pg-info"></span>
@@ -164,6 +183,7 @@
 
     <!-- ================= BULK STOCK COUNT ================= -->
     <section id="view-bulk" class="view">
+      <div class="myraa-flow" aria-label="Bulk count workflow"><span><i class="fa-solid fa-download"></i> 1 · Download count sheet</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-list-check"></i> 2 · Count your stock</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-upload"></i> 3 · Upload filled sheet</span></div>
       <header class="view-head"><div><h1>Bulk Stock Count</h1><p class="sub">Count the whole hub on a sheet, then load every number in one go.</p></div></header>
       <div class="two-col">
         <div class="panel">
@@ -186,6 +206,7 @@
 
     <!-- ================= ORDERS ================= -->
     <section id="view-orders" class="view">
+      <div class="myraa-flow" aria-label="Existing order processing workflow"><span><i class="fa-solid fa-file-arrow-up"></i> 1 · Import marketplace file</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-link"></i> 2 · Match SKUs</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-box"></i> 3 · Dispatch ready stock</span></div>
       <header class="view-head"><div><h1>Process Orders</h1><p class="sub">Upload marketplace orders. Dispatch deducts only counted stock that is ready; any remaining quantity stays pending.</p></div><div class="order-head-actions"><button id="refresh-order-readiness" class="btn-secondary" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh readiness</button><button id="retry-order-matches" class="btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> Retry SKU matching</button></div></header>
       <div class="panel" style="text-align:center;">
         <label id="dropzone" class="dropzone">
@@ -343,12 +364,13 @@
   <aside id="assistant-photo-preview" class="assistant-photo-preview" aria-label="MYRAA product photo preview" hidden></aside>
   <section id="assistant-panel" class="assistant-panel" aria-label="MYRAA AI assistant" hidden>
     <header class="assistant-panel-head">
-      <span class="assistant-avatar"><i class="fa-solid fa-sparkles" aria-hidden="true"></i></span>
+      <span class="assistant-avatar"><img src="assets/myraa-lady-portrait.webp" alt="MYRAA 3D-style assistant portrait"></span>
       <div class="assistant-head-copy"><strong>MYRAA · Gemini AI</strong><small><span class="assistant-online-dot"></span><span id="assistant-state" aria-live="polite">Checking Railway cloud AI…</span></small><small class="assistant-powered">Gemini API · hosted on Railway</small></div>
       <button id="assistant-new-chat" class="assistant-head-btn" type="button" aria-label="Start a new conversation" title="New conversation"><i class="fa-solid fa-plus"></i></button>
       <button id="assistant-history-button" class="assistant-head-btn" type="button" aria-label="Conversation history" title="Conversation history"><i class="fa-solid fa-clock-rotate-left"></i></button>
       <button id="assistant-close" class="assistant-head-btn" type="button" aria-label="Close assistant and end voice call" title="Close MYRAA"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
     </header>
+    <div class="assistant-intro" aria-label="Meet MYRAA"><div class="assistant-intro-content"><span class="assistant-intro-eyebrow"><i class="fa-solid fa-sparkles"></i> YOUR AI INVENTORY CO-PILOT</span><strong>Hi, I'm MYRAA <span aria-hidden="true">👋</span></strong><p>Ask about stock, identify a photo or update inventory — with your confirmation.</p></div><img src="assets/myraa-lady-portrait.webp" alt="MYRAA welcoming you" loading="lazy"></div>
     <div id="assistant-voice-container" class="assistant-voice-container" hidden></div>
     <div class="assistant-toolbar" role="group" aria-label="MYRAA features">
       <button id="assistant-voice-button" type="button" aria-pressed="false"><i class="fa-solid fa-microphone"></i> Speak</button>
@@ -363,6 +385,7 @@
       <input id="assistant-chat-input" type="text" maxlength="500" autocomplete="off" placeholder="Hindi, English ya Hinglish mein kuch bhi poochhein…" aria-label="Chat with MYRAA">
       <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
     </form>
+    <div class="assistant-task-suggestions" aria-label="Suggested inventory questions"><button type="button" data-myraa-prompt="Mere low stock products aur sizes batao"><i class="fa-solid fa-triangle-exclamation"></i> Low stock</button><button type="button" data-myraa-prompt="Mere inventory mein total products aur pieces kitne hain?"><i class="fa-solid fa-box-open"></i> Stock summary</button><button type="button" data-myraa-prompt="Mere pending marketplace orders ki readiness batao"><i class="fa-solid fa-cart-shopping"></i> Order readiness</button></div>
     <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button><button id="assistant-automation-help" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> आवाज़ के आदेश</button></div>
     <p class="assistant-footnote">Inventory aur roz ki baat · बदलाव से पहले पुष्टि · WhatsApp draft खोलकर खुद भेजें</p>
   </section>
@@ -396,7 +419,7 @@
 </div>
 
 <section id="myraa-login" class="myraa-login" role="dialog" aria-modal="true" aria-label="Inventory sign in" hidden>
-  <form id="myraa-login-form" class="myraa-login-card"><div class="login-mark"><i class="fa-solid fa-shirt"></i></div><h2>Welcome to MYRAA</h2><p>Sign in to your secured Railway inventory workspace.</p><label for="myraa-login-password">Workspace password</label><input id="myraa-login-password" type="password" autocomplete="current-password" required placeholder="Enter workspace password"><p id="myraa-login-error" class="login-error" aria-live="polite"></p><button type="submit" class="btn-primary"><i class="fa-solid fa-lock-open"></i> Sign in</button></form>
+  <form id="myraa-login-form" class="myraa-login-card"><div class="login-visual"><img src="assets/myraa-lady-full.webp" alt="MYRAA 3D-style virtual assistant"><div class="login-visual-copy"><strong>Welcome to smarter inventory.</strong><span>Fashion inventory, organised beautifully.</span></div></div><div class="login-fields"><div class="login-mark"><img src="assets/myraa-mark.svg" alt="" width="34" height="34"></div><span class="section-eyebrow">SECURE RAILWAY WORKSPACE</span><h2>Welcome to MYRAA</h2><p>Sign in to your secured inventory workspace.</p><label for="myraa-login-password">Workspace password</label><input id="myraa-login-password" type="password" autocomplete="current-password" required placeholder="Enter workspace password"><p id="myraa-login-error" class="login-error" aria-live="polite"></p><button type="submit" class="btn-primary"><i class="fa-solid fa-lock-open"></i> Sign in securely</button><small><i class="fa-solid fa-shield-halved"></i> Hosted on Railway · Protected inventory</small></div></form>
 </section>
 <div id="app-loading-indicator" class="app-loading-indicator" role="status" aria-live="polite" aria-label="Loading app data"><span></span></div>
 
@@ -404,5 +427,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="app.js?v=myraa-production-2"></script>
+<script src="myraa-signature-v3.js?v=3"></script>
 </body>
 </html>
