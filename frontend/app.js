@@ -2498,7 +2498,7 @@ async function sendCloudAssistantMessage(typing, requestSequence, requestSession
   const response = await fetch(`${API}/assistant/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: assistantHistory.slice(-12) }),
+    body: JSON.stringify({ messages: assistantHistory.slice(-12), language: $("assistant-language")?.value || "hi-IN" }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || `Cloud assistant failed (HTTP ${response.status})`);
@@ -2716,16 +2716,108 @@ function stopMyraaVoice() {
   const button = $("assistant-voice-button");
   if (button) button.innerHTML = '<i class="fa-solid fa-microphone"></i> Speak';
 }
+// Browser TTS voices depend on the user's OS and browser. Prefer a voice in
+// the chosen language; use a Devanagari speaking script for Hindi/Hinglish.
+function availableMyraaVoices() {
+  return typeof window.speechSynthesis?.getVoices === "function"
+    ? window.speechSynthesis.getVoices() : [];
+}
+function chooseMyraaVoice(lang, voices = availableMyraaVoices()) {
+  const preferred = lang.toLowerCase().startsWith("hi") ? "hi" : "en";
+  const regional = preferred === "hi" ? "hi-in" : "en-in";
+  const candidates = voices.filter((voice) =>
+    String(voice.lang || "").toLowerCase().replace("_", "-").startsWith(preferred + "-")
+  );
+  const nameScore = (name) => /swara|heera|hindi|हिन्दी|female|neerja|priya|zira|google/i.test(name) ? 2 : 0;
+  return [...candidates].sort((a, b) => {
+    const score = (voice) => (voice.lang.toLowerCase().replace("_", "-") === regional ? 4 : 0)
+      + nameScore(voice.name) + (voice.localService === false ? 1 : 0);
+    return score(b) - score(a);
+  })[0] || null;
+}
+function speechReadyMyraaText(reply, language) {
+  // Convert markdown / raw URLs / machine identifiers to spoken phrases only.
+  let text = makeSpeechFriendly(reply)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[*#`~|•]/g, " ")
+    .replace(/(?:^|\s)(?:[-–]\s+)(?=\S)/g, ", ")
+    .replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (language.startsWith("hi")) {
+    // Roman Hindi often gets read as individual English letters by hi-IN TTS.
+    // This small vocabulary handles fallback/old chat messages. Gemini is also
+    // instructed server-side to respond in Devanagari for new Hindi messages.
+    const everydayWords = [
+      ["out of stock", "स्टॉक खत्म"], ["low stock", "कम स्टॉक"],
+      ["in stock", "स्टॉक में"], ["stock", "स्टॉक"], ["size", "साइज़"],
+      ["pieces", "पीस"], ["piece", "पीस"], ["products", "प्रोडक्ट्स"],
+      ["product", "प्रोडक्ट"], ["total", "कुल"], ["orders", "ऑर्डर्स"],
+      ["order", "ऑर्डर"], ["quantity", "मात्रा"], ["available", "उपलब्ध"],
+      ["reorder", "री-ऑर्डर"], ["updated", "अपडेट हो गया"],
+      ["mein", "में"], ["me", "में"], ["hai", "है"], ["hain", "हैं"],
+      ["aapke", "आपके"], ["aap", "आप"], ["batao", "बताओ"],
+      ["karo", "करो"], ["myraa", "मायरा"],
+    ];
+    for (const [word, spoken] of everydayWords) {
+      text = text.replace(new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), spoken);
+    }
+  }
+  return text;
+}
+let myraaVoiceSequence = 0;
 function speakMyraaReply(reply) {
   if (!myraaSpeakReplies || !window.speechSynthesis || !reply) return;
-  window.speechSynthesis.cancel();
-  const text = makeSpeechFriendly(reply).replace(/https?:\/\/\S+/g, "").slice(0, 500);
+  const sequence = ++myraaVoiceSequence;
+  const preferred = $("assistant-language")?.value || "hi-IN";
+  const lang = preferred === "hi-IN" && !/[\u0900-\u097f]/.test(reply) ? "en-IN" : preferred;
+  // Roman-script messages are read with an Indian-English voice instead of
+  // feeding Latin letters into a Hindi-only voice (which can spell them).
+  const text = speechReadyMyraaText(reply, lang);
   if (!text) return;
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = $("assistant-language")?.value || "hi-IN";
-  utterance.rate = 1;
-  window.speechSynthesis.speak(utterance);
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const speakWithVoices = () => {
+    if (sequence !== myraaVoiceSequence || !myraaSpeakReplies) return;
+    const voices = availableMyraaVoices();
+    const voice = chooseMyraaVoice(lang, voices);
+    if (lang === "hi-IN" && voices.length && !voice) {
+      setMyraaVoiceFeedback("Hindi voice is device par available nahi hai. Windows/Chrome mein Hindi text-to-speech voice install karein, ya English select karein.");
+      return;
+    }
+    // Shorter sentences avoid the long-utterance cutoffs found in some browsers.
+    const chunks = text.match(/[^.!?।]+[.!?।]?/g)?.map((s) => s.trim()).filter(Boolean).slice(0, 8) || [text];
+    chunks.forEach((chunk, index) => {
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.lang = voice?.lang || lang;
+      if (voice) utterance.voice = voice;
+      utterance.rate = lang === "hi-IN" ? 0.92 : 0.96;
+      utterance.pitch = 1.04;
+      utterance.volume = 1;
+      if (index === 0) utterance.onstart = () => setMyraaVoiceFeedback(lang === "hi-IN" ? "MYRAA Hindi mein bol rahi hai…" : "MYRAA is speaking…");
+      if (index === chunks.length - 1) utterance.onend = () => setMyraaVoiceFeedback("");
+      utterance.onerror = (error) => {
+        if (error.error !== "canceled" && error.error !== "interrupted")
+          setMyraaVoiceFeedback("Voice playback failed. Browser speech settings check karein.");
+      };
+      synth.speak(utterance);
+    });
+  };
+  // Chromium often loads voices asynchronously after the page opens.
+  if (!availableMyraaVoices().length && synth.addEventListener) {
+    const onVoices = () => { synth.removeEventListener("voiceschanged", onVoices); speakWithVoices(); };
+    synth.addEventListener("voiceschanged", onVoices);
+    window.setTimeout(() => { synth.removeEventListener("voiceschanged", onVoices); speakWithVoices(); }, 650);
+  } else speakWithVoices();
 }
+$("assistant-language")?.addEventListener("change", () => {
+  ++myraaVoiceSequence;
+  window.speechSynthesis?.cancel();
+  if (myraaListening) stopMyraaVoice();
+  const lang = $("assistant-language")?.value || "hi-IN";
+  setMyraaVoiceFeedback(lang === "hi-IN" ? "Hindi / Hinglish selected · Mic aur reply Hindi mein honge." : "English selected · Mic and reply will use English.");
+});
+
 function startMyraaVoice() {
   if (myraaListening) { stopMyraaVoice(); setMyraaVoiceFeedback("Listening stopped."); return; }
   if (!MyraaRecognition) {
@@ -2771,7 +2863,7 @@ $("assistant-speech-toggle")?.addEventListener("click", (event) => {
   myraaSpeakReplies = !myraaSpeakReplies;
   event.currentTarget.setAttribute("aria-pressed", String(myraaSpeakReplies));
   event.currentTarget.innerHTML = `<i class="fa-solid ${myraaSpeakReplies ? "fa-volume-high" : "fa-volume-xmark"}"></i>`;
-  if (!myraaSpeakReplies) window.speechSynthesis?.cancel();
+  if (!myraaSpeakReplies) { ++myraaVoiceSequence; window.speechSynthesis?.cancel(); }
   setMyraaVoiceFeedback(myraaSpeakReplies ? "Spoken replies enabled." : "Spoken replies disabled.");
 });
 

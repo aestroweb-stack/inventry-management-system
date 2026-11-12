@@ -240,7 +240,10 @@ async def assistant_cloud_chat(request: Request):
         raise HTTPException(status_code=429, detail="Too many assistant requests. Wait a minute and retry.")
     try:
         payload = await request.json()
-        result = await cloud_assistant_service.chat(payload.get("messages") if isinstance(payload, dict) else None)
+        result = await cloud_assistant_service.chat(
+            payload.get("messages") if isinstance(payload, dict) else None,
+            language=payload.get("language", "auto") if isinstance(payload, dict) else "auto",
+        )
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
