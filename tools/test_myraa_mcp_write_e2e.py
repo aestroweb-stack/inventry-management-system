@@ -81,7 +81,7 @@ async def prepare(session, name: str, arguments: dict, expected_action: str, exp
     expect(details.get("sku") == expected_sku, f"Unexpected SKU from {name}; refusing to confirm")
     token = outcome.get("confirmation_token")
     expect(isinstance(token, str) and len(token) > 25, f"No confirmation token from {name}")
-    return token # pyright: ignore[reportReturnType]
+    return token
 
 
 async def confirm(session, token: str) -> dict:
@@ -115,7 +115,11 @@ async def gemini_prepare_update(sku: str) -> dict:
         )}
     ], language="en-IN")
     pending = reply.get("pending_action")
-    expect(isinstance(pending, dict), "Gemini did not prepare a change (no pending_action)")
+    # Show the service's safe human-readable diagnostic if Gemini did not
+    # return a preview. Never print the confirmation token or API secrets.
+    if not isinstance(pending, dict):
+        reason = str(reply.get("reply") or "No diagnostic from Gemini").replace("\n", " ")[:260]
+        raise TestFailure("Gemini did not prepare a change (no pending_action). Reason: " + reason)
     expect(pending.get("action") == "product_update", "Gemini prepared the wrong action; refusing to confirm")
     details = pending.get("details") or {}
     expect(details.get("sku") == sku, "Gemini targeted another SKU; refusing to confirm")

@@ -278,10 +278,19 @@ async def _generate(
     contents: list[dict[str, Any]], api_key: str, language: str = "auto",
     *, force_prepare_tool: str | None = None,
 ) -> dict[str, Any]:
+    # For explicit SKU rename commands, make the permitted tool set small and
+    # require both identifying parameters. General chat keeps all read/prepare tools.
+    tool_declarations = _TOOLS
+    if force_prepare_tool == "prepare_update_product":
+        update_tool = next(tool for tool in _TOOLS if tool["name"] == force_prepare_tool)
+        tool_declarations = [{
+            **update_tool,
+            "parameters": {**update_tool["parameters"], "required": ["sku", "new_name"]},
+        }]
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION + ("\n" + LANGUAGE_STYLE[language] if language in LANGUAGE_STYLE else "")}]},
         "contents": contents,
-        "tools": [{"functionDeclarations": _TOOLS}],
+        "tools": [{"functionDeclarations": tool_declarations}],
         "generationConfig": {"maxOutputTokens": 4096, "thinkingConfig": {"thinkingLevel": "low"}},
     }
     if force_prepare_tool is not None:
@@ -329,41 +338,62 @@ async def _chat_gemini(messages: Any, language: str = "auto") -> dict[str, Any]:
         raise ValueError("Message is too long. Keep it under 1000 characters.")
 
     pending_action = None
-    requested_rename = _explicit_product_rename_requested(contents[-1]["parts"][0]["text"])
+    original_text = contents[-1]["parts"][0]["text"]
+    requested_rename = _explicit_product_rename_requested(original_text)
+    sku_match = re.search(r"\bsku\s*[:#-]?\s*([a-z0-9][a-z0-9_.-]{1,63})\b", original_text, re.I)
+    requested_sku = sku_match.group(1).upper() if requested_rename and sku_match else None
     tool_errors: list[str] = []
-    force_attempted = False
     for turn in range(MAX_TURNS):
-        model_content = await _generate(contents, api_key, language=language)
+        # IMPORTANT: A Lite model may repeatedly call get_product/search_inventory
+        # until MAX_TURNS is exhausted. For a clear, SKU-specific rename, require
+        # prepare_update_product on the FIRST call instead of waiting for a text
+        # response that may never arrive. The tool only returns a signed preview.
+        forced_rename = requested_rename and turn == 0
+        model_content = await _generate(
+            contents, api_key, language=language,
+            force_prepare_tool="prepare_update_product" if forced_rename else None,
+        )
         parts = model_content.get("parts") or []
-        calls = [part["functionCall"] for part in parts if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)]
-        if not calls and requested_rename and not force_attempted:
-            # Lite models may do a read tool first, then answer with text
-            # rather than PREPARE. Retry only ONCE, including after reads.
-            # This only prepares a preview; no confirm tool is exposed to Gemini.
-            force_attempted = True
-            model_content = await _generate(
-                contents, api_key, language=language,
-                force_prepare_tool="prepare_update_product",
-            )
-            parts = model_content.get("parts") or []
-            calls = [part["functionCall"] for part in parts if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)]
+        calls = [
+            part["functionCall"] for part in parts
+            if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)
+        ]
         if not calls:
+            if forced_rename:
+                # In ANY mode Gemini should return a functionCall. Never pretend
+                # a text-only answer is a successful inventory preview.
+                return {
+                    "reply": "Gemini ne product update tool call nahi diya. Koi inventory badlav nahi hua; dobara try karein.",
+                    "pending_action": None, "model": model_name(), "provider": "Gemini",
+                }
             text_parts = [str(part.get("text") or "") for part in parts if isinstance(part, dict) and part.get("text")]
             reply = "\n".join(text_parts).strip() or "Mujhe abhi jawab nahi mila. Dobara poochhein?"
             if tool_errors and not pending_action:
                 reply = "Inventory action ka preview nahi ban saka: " + tool_errors[-1]
             return {"reply": reply[:4000], "pending_action": pending_action, "model": model_name(), "provider": "Gemini"}
 
+        if forced_rename and (len(calls) != 1 or str(calls[0].get("name")) != "prepare_update_product"):
+            return {
+                "reply": "Gemini ne expected product-update tool nahi chuna. Koi badlav nahi hua.",
+                "pending_action": None, "model": model_name(), "provider": "Gemini",
+            }
+
         contents.append(model_content)
         response_parts = []
         for call in calls:
             name = str(call.get("name") or "")
             arguments = call.get("args") or {}
+            # Do not allow a model to substitute another SKU for an explicitly
+            # requested product rename. Do not invoke any tool on mismatch.
+            if name == "prepare_update_product" and requested_sku:
+                candidate = str(arguments.get("sku") or "").strip().upper() if isinstance(arguments, dict) else ""
+                if candidate != requested_sku:
+                    tool_errors.append("Gemini returned an SKU different from the requested product; change refused.")
+                    break
             result = await asyncio.to_thread(_execute_tool, name, arguments)
             if result.get("status") == "error":
                 tool_errors.append(str(result.get("message") or "Unable to prepare change")[:240])
             if (name == "prepare_inventory_action" or name in _PREPARE_TOOLS) and result.get("status") == "awaiting_user_confirmation":
-                # Only the first confirmed PREPARE can be offered to the user.
                 if pending_action is None:
                     pending_action = {
                         "confirmation_token": result.get("confirmation_token"),
@@ -377,8 +407,13 @@ async def _chat_gemini(messages: Any, language: str = "auto") -> dict[str, Any]:
             if call.get("id"):
                 response["id"] = call["id"]
             response_parts.append({"functionResponse": response})
-        # Once a preview is ready, DO NOT ask Gemini to explain it via an extra
-        # generateContent call. That costs quota and can fail with an unrelated 503.
+
+        # For forced operations, don't waste API calls and hide useful errors.
+        if forced_rename and not pending_action:
+            return {
+                "reply": "Product update preview nahi ban saka: " + (tool_errors[-1] if tool_errors else "No confirmed prepare result."),
+                "pending_action": None, "model": model_name(), "provider": "Gemini",
+            }
         if pending_action:
             reply = (
                 "बदलाव का प्रीव्यू तैयार है। सही हो तो नीचे Confirm change दबाएँ।"
@@ -389,7 +424,11 @@ async def _chat_gemini(messages: Any, language: str = "auto") -> dict[str, Any]:
         contents.append({"role": "user", "parts": response_parts})
 
     return {
-        "reply": "Maine live data check kiya hai. Jo badlav propose hua hai, use neeche review karke Confirm change dabayein.",
+        "reply": (
+            "Inventory action ka preview nahi ban saka: " + tool_errors[-1]
+            if tool_errors else
+            "Maine live data check kiya hai. Agar koi badlav karna hai to product SKU aur naye details batayein."
+        ),
         "pending_action": pending_action,
         "model": model_name(), "provider": "Gemini",
     }
