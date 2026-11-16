@@ -30,6 +30,7 @@ from services import (
 )
 import inventory_mcp
 from services import app_auth
+from services import packing_picklist_service
 from mcp.server.transport_security import TransportSecuritySettings
 
 Base.metadata.create_all(bind=engine)
@@ -1322,6 +1323,47 @@ def global_transactions(
     } for t in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
 
+
+
+# ------------------------------------------------------------------ #
+# Packing picklist: independent, read-only Excel preparation workflow.
+# This endpoint never imports/dispatches orders or writes inventory records.
+# Operator authentication + same-origin checks are handled by /api/ middleware.
+# ------------------------------------------------------------------ #
+@app.post("/api/packing-picklist/preview")
+async def packing_picklist_preview(file: UploadFile = File(...)):
+    data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
+    try:
+        result = packing_picklist_service.parse_upload(data, file.filename or "")
+    except packing_picklist_service.PicklistError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "source_rows": result["source_rows"], "total_qty": result["total_qty"],
+        "merged_rows": result["merged_rows"], "review_count": result["review_count"],
+        "party_totals": result["party_totals"], "brand_totals": result["brand_totals"],
+        "sample_items": sorted(result["items"], key=lambda r: (r["party"], r["design"], r["size"]))[:18],
+        "quantity_reconciled": True,
+    }
+
+
+@app.post("/api/packing-picklist/export")
+async def packing_picklist_export(file: UploadFile = File(...), include_brand_pages: bool = True):
+    data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
+    try:
+        result = packing_picklist_service.parse_upload(data, file.filename or "")
+        output = packing_picklist_service.to_xlsx(result, include_brand_pages=include_brand_pages)
+    except packing_picklist_service.PicklistError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Packing picklist generation failed")
+        raise HTTPException(status_code=500, detail="Excel generation failed") from exc
+    filename = 'MYRAA_Packing_Picklist_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.xlsx'
+    return StreamingResponse(
+        BytesIO(output),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "X-Picklist-Total-Qty": str(result["total_qty"])},
+    )
 
 # ------------------------------------------------------------------ #
 # Order history / batches

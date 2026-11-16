@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <link rel="stylesheet" href="myraa-production.css?v=2">
 <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
+  <link rel="stylesheet" href="packing-picklist.css?v=1">
 </head>
 <body>
 
@@ -40,6 +41,7 @@
       <button data-view="visual" class="rail-link"><i class="fa-solid fa-camera-retro"></i><span class="rail-label">Visual Product Search</span></button>
       <button data-view="bulk" class="rail-link"><i class="fa-solid fa-clipboard-check"></i><span class="rail-label">Bulk Stock Count</span></button>
       <button data-view="orders" class="rail-link"><i class="fa-solid fa-file-invoice"></i><span class="rail-label">Process Orders</span></button>
+      <button data-view="packing" class="rail-link"><i class="fa-solid fa-people-carry-box"></i><span class="rail-label">Packing Picklist</span></button>
       <button data-view="reorder" class="rail-link"><i class="fa-solid fa-cart-shopping"></i><span class="rail-label">Reorder List</span></button>
       <button data-view="alerts" class="rail-link"><i class="fa-solid fa-bell"></i><span class="rail-label">Alerts</span><span id="alert-count" class="badge" hidden>0</span></button>
       <button data-view="history" class="rail-link"><i class="fa-solid fa-clock-rotate-left"></i><span class="rail-label">History</span></button>
@@ -218,6 +220,43 @@
       <div id="order-history" style="margin-top:16px;"></div>
       <div id="orders-pager" class="pager" hidden><button id="orders-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
       <div id="upload-result" style="margin-top:16px;"></div>
+    </section>
+
+    <!-- ================= PACKING PICKLIST (READ ONLY) ================= -->
+    <section id="view-packing" class="view">
+      <header class="view-head">
+        <div><h1>Packing Picklist Generator</h1><p class="sub">Marketplace picklist upload karein. Same design + size merge hoga, party-wise sheets aur brand-wise tabs milenge—reference jaisa five-column layout.</p></div>
+      </header>
+      <div class="packing-notice"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Packing-only export: inventory stock, imported orders aur dispatch <strong>change nahi honge.</strong></div>
+      <div class="packing-grid">
+        <section class="panel packing-upload">
+          <h2><i class="fa-solid fa-file-excel"></i> 1 · Upload original picklist</h2>
+          <label for="packing-file" class="packing-drop">
+            <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+            <strong>Choose Excel / CSV file</strong>
+            <span id="packing-filename">.xlsx, .xls, .csv · Master SKU and Qty</span>
+            <input type="file" accept=".xlsx,.xls,.csv" id="packing-file" hidden>
+          </label>
+          <label class="packing-check"><input id="packing-brand-pages" type="checkbox" checked> Brand-wise tabs bhi include karo</label>
+          <p class="hint">(A)/(B)/(1)/(2) design variations normalized; 22141, NK-851 aur asli design numbers preserved. Missing party safely reviewed.</p>
+          <div class="packing-actions"><button id="packing-preview" class="btn-secondary" type="button" disabled><i class="fa-solid fa-eye"></i> Check & Preview</button><button id="packing-export" class="btn-primary" type="button" disabled><i class="fa-solid fa-file-arrow-down"></i> Download Excel</button></div>
+          <p id="packing-status" class="hint" role="status" aria-live="polite">Upload a file to begin.</p>
+        </section>
+        <section class="panel packing-results" aria-live="polite">
+          <h2><i class="fa-solid fa-layer-group"></i> 2 · Verified totals</h2>
+          <div class="packing-stats">
+            <div><span>Source lines</span><strong id="packing-source-count">—</strong></div>
+            <div><span>Total pieces</span><strong id="packing-total">—</strong></div>
+            <div><span>Merged lines</span><strong id="packing-merged">—</strong></div>
+            <div><span>Review rows</span><strong id="packing-review-count">—</strong></div>
+          </div>
+          <div id="packing-party-list" class="packing-party-list"><p class="hint">Party-wise totals yahan dikhenge.</p></div>
+        </section>
+      </div>
+      <section class="panel packing-sample-panel">
+        <div class="packing-sample-head"><h2>Normalized SKU preview</h2><span>Sample only · full list in Excel</span></div>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>Party</th><th>Picklist SKU</th><th>Contributing brands</th><th class="num">Qty</th></tr></thead><tbody id="packing-sample"><tr><td colspan="4" class="empty">Upload a file to preview consolidation</td></tr></tbody></table></div>
+      </section>
     </section>
 
     <!-- ================= REORDER LIST ================= -->
@@ -428,5 +467,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="app.js?v=myraa-production-2"></script>
 <script src="myraa-signature-v3.js?v=3"></script>
+<script src="packing-picklist.js?v=1"></script>
 </body>
 </html>
