@@ -1,75 +1,108 @@
-/* MYRAA Packing Picklist: independent of order import / dispatch and stock CRUD. */
+/* MYRAA Smart Packing Picklist v2: read-only; full paginated preview. */
 (() => {
   'use strict';
-  const byId = (s) => document.getElementById(s);
-  const input = byId('packing-file');
-  const previewButton = byId('packing-preview');
-  const exportButton = byId('packing-export');
-  const fileLabel = byId('packing-filename');
-  const status = byId('packing-status');
-  if (!input || !previewButton || !exportButton || !status) return;
-  const h = (s) => String(s ?? '').replace(/[&<>"']/g, x => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
-  let busy = false;
-  let previewed = false;
+  const $ = (id) => document.getElementById(id);
+  const input = $('packing-file'), previewBtn = $('packing-preview');
+  const exportBtn = $('packing-export'), status = $('packing-status');
+  const brand = $('packing-brand'), date = $('packing-date');
+  const audit = $('packing-audit'), pager = $('packing-pagination');
+  if (!input || !previewBtn || !exportBtn || !status) return;
+  const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, x => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[x]));
+  let busy = false, previewed = false, currentPage = 1, pageCount = 1;
+  const localToday = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+  date.value = localToday();
   const setBusy = (on) => {
     busy = on;
-    previewButton.disabled = on || !input.files.length;
-    exportButton.disabled = on || !input.files.length || !previewed;
+    previewBtn.disabled = on || !input.files.length;
+    exportBtn.disabled = on || !input.files.length || !previewed;
+    $('packing-prev').disabled = on || currentPage <= 1;
+    $('packing-next').disabled = on || currentPage >= pageCount;
   };
-  const form = () => { const f = new FormData(); f.append('file', input.files[0]); return f; };
+  const form = () => {
+    const f = new FormData();
+    f.append('file', input.files[0]);
+    f.append('brand_override', brand.value);
+    f.append('picklist_date', date.value);
+    f.append('include_audit', audit.checked ? 'true' : 'false');
+    return f;
+  };
   const getError = async (r) => {
     try { const j = await r.json(); return j.detail || `HTTP ${r.status}`; }
     catch { return `HTTP ${r.status}`; }
   };
-  const preview = async () => {
+  async function preview(page=1) {
     if (busy || !input.files.length) return;
-    previewed = false;
+    const isFirst = page === 1;
+    if (isFirst) previewed = false;
     setBusy(true);
-    status.textContent = 'Checking SKU, size, party and quantity totals…';
+    status.classList.remove('packing-error');
+    status.textContent = 'Matching designs, colors, sizes and verifying quantities…';
     try {
-      const response = await fetch('/api/packing-picklist/preview', {method: 'POST', body: form()});
+      const response = await fetch(`/api/packing-picklist/preview?page=${page}&page_size=25`, {method:'POST', body:form()});
       if (!response.ok) throw new Error(await getError(response));
       const data = await response.json();
-      if (!data.quantity_reconciled) throw new Error('Quantity reconciliation did not pass');
-      byId('packing-source-count').textContent = Number(data.source_rows).toLocaleString();
-      byId('packing-total').textContent = Number(data.total_qty).toLocaleString();
-      byId('packing-merged').textContent = Number(data.merged_rows).toLocaleString();
-      byId('packing-review-count').textContent = Number(data.review_count).toLocaleString();
-      byId('packing-party-list').innerHTML = '<h3>Party breakdown</h3>' + Object.entries(data.party_totals || {})
-        .map(([party, qty]) => `<div class="packing-party-line"><span>${h(party)}</span><strong>${Number(qty).toLocaleString()} pcs</strong></div>`).join('');
-      byId('packing-sample').innerHTML = (data.sample_items || []).map(r => `<tr><td>${h(r.party)}</td><td class="sku-tag">${h(r.pick_sku)}</td><td>${h(r.brands)}</td><td class="num"><strong>${Number(r.qty).toLocaleString()}</strong></td></tr>`).join('') || '<tr><td colspan="4">No rows</td></tr>';
+      if (!data.quantity_reconciled) throw new Error('Quantity reconciliation failed');
+      $('packing-source-count').textContent = Number(data.source_rows).toLocaleString();
+      $('packing-total').textContent = Number(data.total_qty).toLocaleString();
+      $('packing-merged').textContent = Number(data.merged_rows).toLocaleString();
+      $('packing-review-count').textContent = Number(data.review_count).toLocaleString();
+      const order = ['NO PARTY','V','NK','O','LP','NEEL'];
+      const partyRows = Object.entries(data.party_totals || {}).sort((a,b)=>{
+        const x = order.indexOf(a[0]), y = order.indexOf(b[0]);
+        return (x === -1 ? 99 : x) - (y === -1 ? 99 : y) || a[0].localeCompare(b[0]);
+      });
+      $('packing-party-list').innerHTML = '<h3>Party breakdown</h3>' + partyRows
+        .map(([p,n])=>`<div class="packing-party-line"><span>${escapeHtml(p)}</span><strong>${Number(n).toLocaleString()} pcs</strong></div>`).join('');
+      $('packing-sample').innerHTML = (data.sample_items || []).map(r=>`<tr><td>${escapeHtml(r.brand)}</td><td>${escapeHtml(r.party)}</td><td class="sku-tag">${escapeHtml(r.pick_sku)}</td><td class="num"><strong>${Number(r.qty).toLocaleString()}</strong></td></tr>`).join('') || '<tr><td colspan="4">No matching rows</td></tr>';
+      currentPage = data.preview_page;
+      pageCount = data.preview_total_pages;
+      pager.hidden = pageCount <= 1;
+      $('packing-page-info').textContent = `Page ${currentPage} of ${pageCount}`;
+      $('packing-preview-total').textContent = `${data.preview_total_rows} merged rows · 25 per page`;
       previewed = true;
-      status.textContent = `Verified ${Number(data.total_qty).toLocaleString()} pieces. ${data.review_count ? `${data.review_count} rows are flagged/inferred; check Review tab after download.` : 'No rows need review.'}`;
-    } catch (error) {
+      status.textContent = `Verified ${Number(data.total_qty).toLocaleString()} pieces · ${data.picklist_date}. ${data.review_count ? `${data.review_count} rows need review. Check optional Audit tabs.` : 'No review warnings.'}`;
+    } catch(error) {
       status.textContent = 'Preview failed: ' + String(error.message || error);
       status.classList.add('packing-error');
     } finally { setBusy(false); }
+  }
+  const reset = () => {
+    previewed = false; currentPage=1; pageCount=1;
+    pager.hidden=true;
+    status.classList.remove('packing-error');
+    status.textContent = input.files.length ? 'Click Check & Preview.' : 'Upload a file to begin.';
+    setBusy(false);
   };
   input.addEventListener('change', () => {
-    previewed = false;
-    fileLabel.textContent = input.files[0]?.name || '.xlsx, .xls, .csv · Master SKU and Qty';
-    status.classList.remove('packing-error');
-    status.textContent = input.files.length ? 'File selected. Click Check & Preview.' : 'Upload a file to begin.';
-    setBusy(false);
+    $('packing-filename').textContent = input.files[0]?.name || '.xlsx, .xls, .csv · Master SKU and Qty';
+    const found = input.files[0]?.name.match(/(20\d{2})-(\d{2})-(\d{2})/);
+    date.value = found ? `${found[1]}-${found[2]}-${found[3]}` : localToday();
+    reset();
   });
-  previewButton.addEventListener('click', () => { status.classList.remove('packing-error'); preview(); });
-  exportButton.addEventListener('click', async () => {
+  brand.addEventListener('change', reset);
+  date.addEventListener('change', reset);
+  previewBtn.addEventListener('click', () => preview(1));
+  $('packing-prev').addEventListener('click', () => preview(Math.max(1,currentPage-1)));
+  $('packing-next').addEventListener('click', () => preview(Math.min(pageCount,currentPage+1)));
+  exportBtn.addEventListener('click', async () => {
     if (busy || !previewed || !input.files.length) return;
-    setBusy(true);
-    status.textContent = 'Generating verified party-wise and brand-wise Excel…';
+    setBusy(true); status.classList.remove('packing-error');
+    status.textContent = 'Generating brand/date-wise printable Excel…';
     try {
-      const withBrands = byId('packing-brand-pages').checked ? 'true' : 'false';
-      const r = await fetch(`/api/packing-picklist/export?include_brand_pages=${withBrands}`, {method:'POST', body:form()});
-      if (!r.ok) throw new Error(await getError(r));
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `MYRAA_Packing_Picklist_${new Date().toISOString().slice(0,10)}.xlsx`;
+      const response = await fetch('/api/packing-picklist/export',{method:'POST',body:form()});
+      if (!response.ok) throw new Error(await getError(response));
+      const blob = await response.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;
+      a.download = `MYRAA_Packing_${brand.value}_${date.value}.xlsx`;
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-      status.textContent = 'Excel generated. Summary, party sheets, brand sheets, Review and Source Audit included.';
-    } catch (error) {
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
+      status.textContent = 'Downloaded: one printable sheet per brand/date (overflow gets page 2). No quantity rows dropped.';
+    } catch(error) {
       status.textContent = 'Download failed: ' + String(error.message || error);
       status.classList.add('packing-error');
     } finally { setBusy(false); }

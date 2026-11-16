@@ -20,7 +20,10 @@ MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_SOURCE_ROWS = 20000
 SIZE_ORDER = ("XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL")
 SIZE_CHOICES = set(SIZE_ORDER) | {"OS", "FREE SIZE", "FREESIZE", "ONE SIZE"}
-PARTY_CODES = ("DEV", "UD", "LP", "NK", "V", "O")
+PARTY_CODES = ("NEEL", "DEV", "UD", "LP", "NK", "V", "O")
+PARTY_SEQUENCE = ("NO PARTY", "V", "NK", "O", "LP", "NEEL")
+# Only trailing color words can be removed. Genuine design IDs and numbers remain.
+COLOR_WORDS = {"BLACK", "WHITE", "BLUE", "RED", "GREEN", "PINK", "PURPLE", "YELLOW", "ORANGE", "BEIGE", "GREY", "GRAY", "NAVY", "RUST", "PEACH", "LEMON", "MUSTARD", "WINE", "MAROON", "CREAM", "CREME", "BROWN", "TEAL", "OLIVE", "RAMA", "PISTA", "GOLD", "GOLDEN", "CHIKU", "CHIKOO", "SKY", "LIGHT", "DARK", "OFF", "RANI", "LAVENDER", "FUCHSIA", "MINT", "KHAKI", "TAN", "MAGENTA", "EMERALD", "IVORY", "TURQUOISE", "AQUA", "MULTI", "MAUVE", "COFFEE", "CHOCOLATE", "SILVER", "LILAC", "NEON", "MEHNDI", "FIRUZI", "FIROZI", "FIROJI", "SAGE", "NUDE", "CHERRY", "PARROT", "SEA", "PURPLEE", "COFFE", "COFFEE", "MULTICOLOR", "MULTICOLOUR", "ROSE", "RANI", "OFFWHITE"}
 # Exact, boundary-anchored brand aliases only. Do NOT strip arbitrary first words.
 BRAND_ALIASES = {
     "KINDA DESI": "KINDA DESI", "KINDA": "KINDA", "TWINS LADY": "TWINS",
@@ -124,12 +127,48 @@ def _parse_record(source_sku: str, supplied_size: Any, qty: int, row_number: int
     }
 
 
-def transform(records: list[dict]) -> dict:
+def _without_color(design: str) -> tuple[str, str]:
+    """Remove suffix color *only*, not intrinsic numeric/design identity.
+
+    EVIL_EYE_BLUE -> EVIL_EYE, NK_851 -> NK_851, PINKPARI_2 -> unchanged.
+    """
+    tokens = design.split("_")
+    removed = []
+    while len(tokens) > 1 and tokens[-1] in COLOR_WORDS and len(removed) < 3:
+        removed.insert(0, tokens.pop())
+    return "_".join(tokens), "_".join(removed)
+
+
+def party_rank(party: str) -> tuple[int, str]:
+    return (PARTY_SEQUENCE.index(party), "") if party in PARTY_SEQUENCE else (len(PARTY_SEQUENCE), party)
+
+
+def _selected_date(source_filename: str, date_value: str | None) -> str:
+    if date_value:
+        try:
+            return datetime.strptime(date_value, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError as exc:
+            raise PicklistError("Invalid date; use YYYY-MM-DD") from exc
+    found = re.search(r"(?:Picklist[_ -])?(20\d\d)[_-](\d\d)[_-](\d\d)", source_filename or "", re.I)
+    if found:
+        try:
+            return datetime(int(found[1]), int(found[2]), int(found[3])).strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+    return datetime.now().strftime("%d/%m/%Y")
+
+
+def transform(records: list[dict], *, brand_override: str = "AUTO", picklist_date: str | None = None, filename: str = "") -> dict:
     if not records:
         raise PicklistError("Excel mein koi data row nahi mili")
+    brand_override = (brand_override or "AUTO").strip().upper()
+    if brand_override not in {"AUTO", "TWINS", "MODA"}:
+        raise PicklistError("Brand selection must be AUTO, TWINS or MODA")
+    date_label = _selected_date(filename, picklist_date)
     columns = list(dict.fromkeys(k for r in records[:200] for k in r.keys()))
     sku_col = _pick_column(columns, SOURCE_COLUMNS)
     qty_col = _pick_column(columns, QTY_COLUMNS)
+    brand_col = _pick_column(columns, ("brand", "seller brand", "seller_brand", "seller name", "marketplace brand"))
     size_col = _pick_column(columns, SIZE_COLUMNS)
     if not sku_col:
         raise PicklistError("Master SKU / Seller SKU / SKU column required. Upload original marketplace picklist, not formatted output.")
@@ -154,6 +193,13 @@ def transform(records: list[dict]) -> dict:
             bad_qty_rows.append(row_number)
             continue
         line = _parse_record(sku, r.get(size_col) if size_col else None, qty, row_number)
+        line["sku_brand"] = line["brand"]
+        explicit_brand = str(r.get(brand_col) or "").strip().upper() if brand_col else ""
+        # Source Brand column or operator-selected brand is authoritative;
+        # auto detection by SKU prefix remains conservative.
+        line["brand"] = (brand_override if brand_override != "AUTO" else explicit_brand or line["brand"])
+        line["original_design"] = line["design"]
+        line["design"], line["color_removed"] = _without_color(line["design"])
         lines.append(line)
     if bad_qty_rows:
         raise PicklistError("Invalid or fractional quantity; correct these Excel rows: " + ", ".join(map(str, bad_qty_rows[:15])))
@@ -162,25 +208,14 @@ def transform(records: list[dict]) -> dict:
     if not lines:
         raise PicklistError("No valid SKU+quantity rows found")
 
-    # Infer a missing party only if this exact design is assigned to ONE party
-    # elsewhere. Otherwise keep it separate and flag, never guess.
-    known = defaultdict(set)
-    for line in lines:
-        if line["explicit_party"] and not line["note"]:
-            known[line["design"]].add(line["explicit_party"])
+    # Missing party stays NO PARTY so it prints FIRST as requested.
+    # Do not infer a party from a different branded design.
     for line in lines:
         if not line["party"]:
-            matches = known[line["design"]]
-            if len(matches) == 1:
-                line["party"] = next(iter(matches))
-                line["note"] = "; ".join(filter(None, [line["note"], "Party inferred from same design"]))
-            else:
-                line["party"] = "NO PARTY"
-                line["note"] = "; ".join(filter(None, [line["note"], "Party missing" if not matches else "Ambiguous parties: " + ",".join(sorted(matches))]))
+            line["party"] = "NO PARTY"
         if line["note"] or line["brand"] == "UNBRANDED" or line["size"] == "UNKNOWN":
             issue = "; ".join(filter(None, [line["note"], "Brand not recognised" if line["brand"] == "UNBRANDED" else ""]))
             review.append({"row": line["row"], "sku": line["original_sku"], "qty": line["qty"], "issue": issue, "party": line["party"]})
-        # Safe naming: V party is the base collection; others remain visible.
         prefix = "" if line["party"] in {"V", "NO PARTY"} else line["party"] + "_"
         line["pick_sku"] = prefix + line["design"] + "_" + line["size"]
 
@@ -216,13 +251,13 @@ def transform(records: list[dict]) -> dict:
     for line in lines:
         party_totals[line["party"]] += line["qty"]
         brand_totals[line["brand"]] += line["qty"]
-    return {"total_qty": total, "source_rows": len(lines), "merged_rows": len(merged),
+    return {"total_qty": total, "source_rows": len(lines), "merged_rows": len(branded), "picklist_date": date_label, "brand_selection": brand_override,
             "skipped_non_item_rows": skipped_blank, "review_count": len(review),
             "party_totals": dict(sorted(party_totals.items())), "brand_totals": dict(sorted(brand_totals.items())),
             "items": merged, "brand_items": branded, "audit": lines, "review": review}
 
 
-def parse_upload(payload: bytes, filename: str) -> dict:
+def parse_upload(payload: bytes, filename: str, *, brand_override: str = "AUTO", picklist_date: str | None = None) -> dict:
     if not payload or len(payload) > MAX_UPLOAD_BYTES:
         raise PicklistError("File empty or over 12 MB")
     if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
@@ -236,7 +271,7 @@ def parse_upload(payload: bytes, filename: str) -> dict:
     # pandas is already used by the existing marketplace import reader. The
     # generator itself never queries a DB or mutates order/stock state.
     records = frame.where(frame.notna(), None).to_dict(orient="records")
-    return transform(records)
+    return transform(records, brand_override=brand_override, picklist_date=picklist_date, filename=filename)
 
 
 def _size_order(value: str):
@@ -249,23 +284,44 @@ def _size_order(value: str):
 
 
 def _sorted_items(items):
-    return sorted(items, key=lambda x: (x["design"], _size_order(x["size"]), x["pick_sku"]))
+    # Required order: missing-party first, then V, NK, O, LP, NEEL, others.
+    return sorted(items, key=lambda x: (party_rank(x["party"]), x["design"], _size_order(x["size"]), x["pick_sku"]))
 
 
-def _columns(items: list[dict], count=5):
-    """Keep all sizes of the same design together in one column."""
+def _pages(items: list[dict], *, row_limit: int = 39, lane_count: int = 5) -> list[list[list[dict]]]:
+    """Five SKU/Qty pairs per printed page, no more than 39 data rows + header.
+
+    A design's size lines stay together if the family fits in a lane. Spillover
+    produces another PRINT PAGE for the same brand; nothing is omitted.
+    """
     families = defaultdict(list)
     for item in _sorted_items(items):
-        families[item["design"]].append(item)
-    groups = list(families.values())
-    target = max(1, ceil(len(items) / count))
-    result = [[] for _ in range(count)]
-    index = 0
-    for group in groups:
-        if index < count - 1 and result[index] and len(result[index]) + len(group) > target:
-            index += 1
-        result[index].extend(group)
-    return result
+        families[(item["party"], item["design"])].append(item)
+    pages: list[list[list[dict]]] = []
+    page = [[] for _ in range(lane_count)]
+    lane = 0
+    for family in families.values():
+        remaining = list(family)
+        while remaining:
+            space = row_limit - len(page[lane])
+            if space <= 0 or (len(remaining) > space and len(remaining) <= row_limit and page[lane]):
+                lane += 1
+                if lane == lane_count:
+                    pages.append(page)
+                    page = [[] for _ in range(lane_count)]
+                    lane = 0
+                space = row_limit - len(page[lane])
+            part, remaining = remaining[:space], remaining[space:]
+            page[lane].extend(part)
+            if remaining:
+                lane += 1
+                if lane == lane_count:
+                    pages.append(page)
+                    page = [[] for _ in range(lane_count)]
+                    lane = 0
+    if any(page):
+        pages.append(page)
+    return pages
 
 
 def _sheet_name(name: str, used: set[str]) -> str:
@@ -278,142 +334,120 @@ def _sheet_name(name: str, used: set[str]) -> str:
     return candidate
 
 
-def create_sheet_data(result: dict, *, include_brand_pages: bool = True) -> list[tuple[str, list[list[Any]], str]]:
-    """Return sheet definitions (name, table, kind). Also used in export tests."""
-    sheets = []
-    d = datetime.now().strftime("%d/%m/%Y")
-    summary = [["MYRAA PICKLIST • PACKING SUMMARY", ""], ["Generated", d],
-               ["Input SKU rows", result["source_rows"]], ["Total pieces", result["total_qty"]],
-               ["Merged party-SKU-size lines", result["merged_rows"]], ["Review rows (including inferred parties)", result["review_count"]],
-               ["", ""], ["PARTY", "PIECES"]]
-    summary += [[key, value] for key, value in sorted(result["party_totals"].items())]
-    summary += [["", ""], ["BRAND", "PIECES"]]
-    summary += [[key, value] for key, value in sorted(result["brand_totals"].items())]
-    summary += [["", ""], ["All quantities are read-only. This upload does NOT dispatch or deduct inventory.", ""]]
-    sheets.append(("Summary", summary, "summary"))
-    parties = defaultdict(list)
-    for item in result["items"]:
-        parties[item["party"]].append(item)
-    for party in sorted(parties, key=lambda p: (p == "NO PARTY", p)):
-        title = f"PARTY {party} • {d} • {sum(i['qty'] for i in parties[party])} pcs"
-        col_groups = _columns(parties[party])
-        max_h = max(len(g) for g in col_groups)
-        table = [[title] + [None] * 13, ["SKU / SIZE", "QTY", None] * 4 + ["SKU / SIZE", "QTY"]]
-        for k in range(max_h):
-            row = []
-            for g in col_groups:
-                if k < len(g):
-                    row.extend([g[k]["pick_sku"], g[k]["qty"]])
-                else:
-                    row.extend([None, None])
-                if len(row) < 14:
-                    row.append(None)
-            table.append(row[:14])
-        sheets.append(("Party " + party, table, "packing"))
-    if include_brand_pages:
-        brandgroups = defaultdict(list)
-        for item in result["brand_items"]:
-            brandgroups[item["brand"]].append(item)
-        for brand in sorted(brandgroups):
-            title = f"BRAND {brand} • {d} • {sum(i['qty'] for i in brandgroups[brand])} pcs"
-            cols = _columns(brandgroups[brand])
-            table = [[title] + [None] * 13, ["SKU / SIZE", "QTY", None] * 4 + ["SKU / SIZE", "QTY"]]
-            for k in range(max(len(c) for c in cols)):
-                row = []
-                for g in cols:
-                    row += ([g[k]["pick_sku"], g[k]["qty"]] if k < len(g) else [None, None])
-                    if len(row) < 14:
-                        row.append(None)
-                table.append(row[:14])
-            sheets.append(("Brand " + brand, table, "packing"))
-    reviews = [["Source Row", "Original SKU", "Qty", "Issue / Reason", "Party / Suggested"]]
-    for r in result["review"]:
-        reviews.append([r["row"], r["sku"], r["qty"], r["issue"], r.get("party", "")])
-    sheets.append(("Review", reviews, "review"))
-    audits = [["Source Row", "Original SKU", "Brand", "Party", "Normalized Design", "Size", "Qty", "Generated Pick SKU", "Notes"]]
-    audits += [[r["row"], r["original_sku"], r["brand"], r["party"], r["design"], r["size"], r["qty"], r["pick_sku"], r["note"]] for r in result["audit"]]
-    sheets.append(("Source Audit", audits, "audit"))
-    return sheets
+def create_sheet_data(result: dict, *, include_brand_pages: bool = True, include_audit: bool = False) -> list[tuple[str, list[list[Any]], str]]:
+    """Brand/date print pages only, matching the supplied A:N reference layout.
+
+    In printed sheets: row 1 date+brand, rows 2..40 SKU/Qty. No totals row.
+    """
+    d = result.get("picklist_date") or datetime.now().strftime("%d/%m/%Y")
+    grouped = defaultdict(list)
+    for item in result["brand_items"]:
+        grouped[item["brand"]].append(item)
+    output = []
+    for brand in sorted(grouped, key=lambda b: (0 if b == "TWINS" else 1 if b == "MODA" else 2, b)):
+        for part, lanes in enumerate(_pages(grouped[brand]), start=1):
+            label = f"{brand}-{d}"
+            sheet_name = f"{brand}-{d.replace('/', '-')}{' '+str(part) if part > 1 else ''}"
+            header = [None] * 14
+            for col in (0, 6, 12):
+                header[col] = label
+            rows = [header]
+            for k in range(max(len(lane) for lane in lanes)):
+                row = [None] * 14
+                for i, lane in enumerate(lanes):
+                    if k < len(lane):
+                        row[i * 3] = lane[k]["pick_sku"]
+                        row[i * 3 + 1] = lane[k]["qty"]
+                rows.append(row)
+            output.append((sheet_name, rows, "packing"))
+    if not output:
+        raise PicklistError("No packing rows after transformation")
+    if include_audit:
+        reviews = [["Source Row", "SKU", "Qty", "Issue", "Party"]]
+        reviews += [[r["row"], r["sku"], r["qty"], r["issue"], r.get("party", "")] for r in result["review"]]
+        output.append(("Review", reviews, "review"))
+        audits = [["Source Row", "Original SKU", "Brand", "Party", "Original Design", "Merged Design", "Size", "Qty", "Pick SKU", "Notes"]]
+        audits += [[r["row"], r["original_sku"], r["brand"], r["party"], r["original_design"], r["design"], r["size"], r["qty"], r["pick_sku"], r["note"]] for r in result["audit"]]
+        output.append(("Source Audit", audits, "audit"))
+    return output
 
 
-def to_xlsx(result: dict, include_brand_pages: bool = True) -> bytes:
-    """Small standard-library-only OOXML writer; no Railway dependency added."""
-    sheets = create_sheet_data(result, include_brand_pages=include_brand_pages)
+def to_xlsx(result: dict, include_brand_pages: bool = True, include_audit: bool = False) -> bytes:
+    """Emit an Excel workbook without extra Railway spreadsheet dependencies."""
+    sheets = create_sheet_data(result, include_brand_pages=include_brand_pages, include_audit=include_audit)
     used = set()
     sheets = [(_sheet_name(n, used), rows, kind) for n, rows, kind in sheets]
 
     def attr(value):
         return xml_escape(str(value), {'"': '&quot;'})
 
+    def col_letter(n):
+        letters = ""
+        while n:
+            n, mod = divmod(n - 1, 26)
+            letters = chr(65 + mod) + letters
+        return letters
+
     def cell(rownum, colnum, value, style):
         if value is None or value == "":
             return ""
-        letter = ""
-        n = colnum + 1
-        while n:
-            n, mod = divmod(n - 1, 26)
-            letter = chr(65 + mod) + letter
-        ref = f"{letter}{rownum}"
+        ref = f"{col_letter(colnum+1)}{rownum}"
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return f'<c r="{ref}" s="{style}"><v>{value}</v></c>'
-        string = attr(value)
-        return f'<c r="{ref}" s="{style}" t="inlineStr"><is><t xml:space="preserve">{string}</t></is></c>'
+        return f'<c r="{ref}" s="{style}" t="inlineStr"><is><t xml:space="preserve">{attr(value)}</t></is></c>'
 
     def sheet_xml(rows, kind):
-        out = ['<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
-               '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">']
+        output = ['<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
+                  '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">']
         if kind == "packing":
-            out += ['<sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>',
-                    '<cols>' + ''.join(f'<col min="{i+1}" max="{i+1}" width="{37 if i%3==0 else 9 if i%3==1 else 3}" customWidth="1"/>' for i in range(14)) + '</cols>']
+            output += ['<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>',
+                       '<sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews>',
+                       '<cols>' + ''.join(f'<col min="{i+1}" max="{i+1}" width="{44 if i%3==0 else 9 if i%3==1 else 3}" customWidth="1"/>' for i in range(14)) + '</cols>']
         else:
-            widths = [20, 34, 20, 22, 32, 14, 10, 35, 50]
-            out += ['<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>',
-                    '<cols>' + ''.join(f'<col min="{i+1}" max="{i+1}" width="{w}" customWidth="1"/>' for i, w in enumerate(widths)) + '</cols>']
-        out.append('<sheetData>')
+            output.append('<cols>' + ''.join(f'<col min="{i+1}" max="{i+1}" width="{w}" customWidth="1"/>' for i, w in enumerate([15,44,20,34,34,34,15,10,42,60])) + '</cols>')
+        output.append('<sheetData>')
         for ridx, row in enumerate(rows, 1):
             cells = []
             for cidx, value in enumerate(row):
-                if kind == "packing":
-                    s = 1 if ridx == 1 else 2 if ridx == 2 else 4 if cidx % 3 == 1 else 3
-                elif kind == "summary":
-                    s = 1 if ridx == 1 else 2 if str(row[0]) in {"PARTY", "BRAND"} else 4 if isinstance(value, (int,float)) else 3
-                else:
-                    s = 2 if ridx == 1 else 4 if isinstance(value, (int,float)) else 3
-                c = cell(ridx, cidx, value, s)
-                if c:
-                    cells.append(c)
-            out.append(f'<row r="{ridx}" ht="{26 if ridx == 1 else 22 if ridx == 2 else 20}" customHeight="1">{"".join(cells)}</row>')
-        out.append('</sheetData>')
+                style = (1 if ridx == 1 else 2) if kind == 'packing' else (3 if ridx == 1 else 4)
+                v = cell(ridx, cidx, value, style)
+                if v:
+                    cells.append(v)
+            height = 38 if kind == "packing" else 23
+            output.append(f'<row r="{ridx}" ht="{height}" customHeight="1">{"".join(cells)}</row>')
+        output.append('</sheetData>')
         if kind == "packing":
-            out.append('<mergeCells count="1"><mergeCell ref="A1:N1"/></mergeCells>')
-            out.append(f'<pageMargins left="0.25" right="0.25" top="0.4" bottom="0.4" header="0.2" footer="0.2"/><pageSetup orientation="landscape" paperSize="9" fitToWidth="1"/>')
-        out.append('</worksheet>')
-        return ''.join(out)
+            output.extend(['<printOptions horizontalCentered="1"/>',
+                '<pageMargins left="0.1" right="0.1" top="0.15" bottom="0.15" header="0" footer="0"/>',
+                '<pageSetup paperSize="8" orientation="landscape" fitToWidth="1" fitToHeight="1"/>'])
+        output.append('</worksheet>')
+        return ''.join(output)
 
     types = '<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' \
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' \
-            '<Default Extension="xml" ContentType="application/xml"/>' \
-            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' \
-            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' \
-            + ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1, len(sheets)+1)) + '</Types>'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' \
+        '<Default Extension="xml" ContentType="application/xml"/>' \
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' \
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' \
+        + ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1,len(sheets)+1)) + '</Types>'
     workbook = '<?xml version="1.0" encoding="utf-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' \
-               + ''.join(f'<sheet name="{attr(n)}" sheetId="{i}" r:id="rId{i}"/>' for i,(n,_,_) in enumerate(sheets, 1)) + '</sheets></workbook>'
+        + ''.join(f'<sheet name="{attr(n)}" sheetId="{i}" r:id="rId{i}"/>' for i,(n,_,_) in enumerate(sheets,1)) + '</sheets></workbook>'
     rels = '<?xml version="1.0" encoding="utf-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' \
-           + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,len(sheets)+1)) \
-           + '<Relationship Id="styleId" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
+        + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,len(sheets)+1)) + '<Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
+    # Black text, white background, 22-point bold data; 26-point bold title.
     styles = '<?xml version="1.0" encoding="utf-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' \
-             '<fonts count="4"><font><sz val="10"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="14"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/></font><font><color rgb="FF173B32"/><sz val="10"/></font></fonts>' \
-             '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF075C49"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE4F2EA"/></patternFill></fill></fills>' \
-             '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="hair"><color rgb="FFD4E3DB"/></left><right style="hair"><color rgb="FFD4E3DB"/></right><top style="hair"><color rgb="FFD4E3DB"/></top><bottom style="hair"><color rgb="FFD4E3DB"/></bottom><diagonal/></border></borders>' \
-             '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
+        '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="26"/><name val="Calibri"/><color rgb="FF000000"/></font><font><b/><sz val="22"/><name val="Calibri"/><color rgb="FF000000"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' \
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' \
+        '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>' \
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' \
+        '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
     root_rels = '<?xml version="1.0" encoding="utf-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
     bio = BytesIO()
-    with ZipFile(bio, "w", ZIP_DEFLATED) as z:
+    with ZipFile(bio,"w",ZIP_DEFLATED) as z:
         z.writestr('[Content_Types].xml', types)
         z.writestr('_rels/.rels', root_rels)
         z.writestr('xl/workbook.xml', workbook)
         z.writestr('xl/_rels/workbook.xml.rels', rels)
         z.writestr('xl/styles.xml', styles)
-        for i, (_name, data, kind) in enumerate(sheets, 1):
-            z.writestr(f'xl/worksheets/sheet{i}.xml', sheet_xml(data, kind))
+        for i,(_name,data,kind) in enumerate(sheets,1):
+            z.writestr(f'xl/worksheets/sheet{i}.xml',sheet_xml(data,kind))
     return bio.getvalue()

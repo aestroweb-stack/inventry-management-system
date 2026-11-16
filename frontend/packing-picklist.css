@@ -32,3 +32,14 @@
 :root[data-theme="dark"] .packing-drop:hover{background:rgba(18,117,92,.32)}
 @media(max-width:960px){.packing-grid{grid-template-columns:1fr}}
 @media(max-width:540px){.packing-stats{grid-template-columns:1fr 1fr}.packing-actions>button{flex:1}.packing-sample-panel .table-wrap{overflow-x:auto}}
+
+/* v2: date/brand controls and complete preview pagination */
+.packing-options{display:grid;grid-template-columns:minmax(120px,1fr) minmax(210px,1.5fr);gap:12px;margin:16px 0 8px}
+.packing-options label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:650;color:var(--text,#164b3e)}
+.packing-options .input{max-width:100%;width:100%;min-height:42px;box-sizing:border-box}
+.packing-pagination{display:flex;justify-content:center;align-items:center;gap:15px;flex-wrap:wrap;margin:14px 0 2px}
+.packing-pagination[hidden]{display:none!important}
+.packing-pagination button{min-height:38px}
+.packing-pagination span{font-size:13px;font-weight:700}
+@media(max-width:540px){.packing-options{grid-template-columns:1fr}.packing-pagination{gap:8px}}
+:root[data-theme="dark"] .packing-options label{color:#daf3e7}

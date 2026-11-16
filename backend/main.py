@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, RedirectResponse, Response, JSONResponse
@@ -1331,39 +1331,70 @@ def global_transactions(
 # Operator authentication + same-origin checks are handled by /api/ middleware.
 # ------------------------------------------------------------------ #
 @app.post("/api/packing-picklist/preview")
-async def packing_picklist_preview(file: UploadFile = File(...)):
+async def packing_picklist_preview(
+    file: UploadFile = File(...),
+    brand_override: str = Form("AUTO"),
+    picklist_date: str = Form(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
     data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
     try:
-        result = packing_picklist_service.parse_upload(data, file.filename or "")
+        result = packing_picklist_service.parse_upload(
+            data, file.filename or "", brand_override=brand_override,
+            picklist_date=picklist_date or None,
+        )
     except packing_picklist_service.PicklistError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Page over brand-aware merged rows, not source or cross-brand rows.
+    items = sorted(result["brand_items"], key=lambda r: (
+        r["brand"], packing_picklist_service.party_rank(r["party"]),
+        r["design"], packing_picklist_service._size_order(r["size"]),
+    ))
+    total = len(items)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
     return {
         "source_rows": result["source_rows"], "total_qty": result["total_qty"],
         "merged_rows": result["merged_rows"], "review_count": result["review_count"],
+        "picklist_date": result["picklist_date"],
         "party_totals": result["party_totals"], "brand_totals": result["brand_totals"],
-        "sample_items": sorted(result["items"], key=lambda r: (r["party"], r["design"], r["size"]))[:18],
+        "sample_items": items[(page - 1) * page_size : page * page_size],
+        "preview_page": page, "preview_total_pages": total_pages,
+        "preview_total_rows": total,
         "quantity_reconciled": True,
     }
 
 
 @app.post("/api/packing-picklist/export")
-async def packing_picklist_export(file: UploadFile = File(...), include_brand_pages: bool = True):
+async def packing_picklist_export(
+    file: UploadFile = File(...),
+    brand_override: str = Form("AUTO"),
+    picklist_date: str = Form(""),
+    include_audit: bool = Form(False),
+):
     data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
     try:
-        result = packing_picklist_service.parse_upload(data, file.filename or "")
-        output = packing_picklist_service.to_xlsx(result, include_brand_pages=include_brand_pages)
+        result = packing_picklist_service.parse_upload(
+            data, file.filename or "", brand_override=brand_override,
+            picklist_date=picklist_date or None,
+        )
+        output = packing_picklist_service.to_xlsx(result, include_audit=include_audit)
     except packing_picklist_service.PicklistError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Packing picklist generation failed")
         raise HTTPException(status_code=500, detail="Excel generation failed") from exc
-    filename = 'MYRAA_Packing_Picklist_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.xlsx'
+    datepart = result["picklist_date"].replace("/", "-")
+    brandpart = brand_override.upper() if brand_override.upper() in {"TWINS", "MODA"} else "ALL-BRANDS"
+    filename = f'MYRAA_Packing_{brandpart}_{datepart}.xlsx'
     return StreamingResponse(
         BytesIO(output),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "X-Picklist-Total-Qty": str(result["total_qty"])},
     )
+
 
 # ------------------------------------------------------------------ #
 # Order history / batches
