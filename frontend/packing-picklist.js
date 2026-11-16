@@ -1,10 +1,10 @@
-/* MYRAA Smart Packing Picklist v2: read-only; full paginated preview. */
+/* MYRAA Smart Packing Picklist v3: read-only; full paginated preview. */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
   const input = $('packing-file'), previewBtn = $('packing-preview');
   const exportBtn = $('packing-export'), status = $('packing-status');
-  const brand = $('packing-brand'), date = $('packing-date');
+  const date = $('packing-date');
   const audit = $('packing-audit'), pager = $('packing-pagination');
   if (!input || !previewBtn || !exportBtn || !status) return;
   const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, x => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[x]));
@@ -24,7 +24,7 @@
   const form = () => {
     const f = new FormData();
     f.append('file', input.files[0]);
-    f.append('brand_override', brand.value);
+    f.append('brand_override', 'AUTO');
     f.append('picklist_date', date.value);
     f.append('include_audit', audit.checked ? 'true' : 'false');
     return f;
@@ -82,7 +82,6 @@
     date.value = found ? `${found[1]}-${found[2]}-${found[3]}` : localToday();
     reset();
   });
-  brand.addEventListener('change', reset);
   date.addEventListener('change', reset);
   previewBtn.addEventListener('click', () => preview(1));
   $('packing-prev').addEventListener('click', () => preview(Math.max(1,currentPage-1)));
@@ -90,7 +89,7 @@
   exportBtn.addEventListener('click', async () => {
     if (busy || !previewed || !input.files.length) return;
     setBusy(true); status.classList.remove('packing-error');
-    status.textContent = 'Generating brand/date-wise printable Excel…';
+    status.textContent = 'Generating dynamic brand/party-wise printable Excel…';
     try {
       const response = await fetch('/api/packing-picklist/export',{method:'POST',body:form()});
       if (!response.ok) throw new Error(await getError(response));
@@ -98,10 +97,10 @@
       const url=URL.createObjectURL(blob);
       const a=document.createElement('a');
       a.href=url;
-      a.download = `MYRAA_Packing_${brand.value}_${date.value}.xlsx`;
+      a.download = `MYRAA_Packing_${date.value}.xlsx`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(()=>URL.revokeObjectURL(url),30000);
-      status.textContent = 'Downloaded: one printable sheet per brand/date (overflow gets page 2). No quantity rows dropped.';
+      status.textContent = 'Downloaded: seller/brand-wise pages, each with dynamic SKU-Qty blocks. No pieces dropped.';
     } catch(error) {
       status.textContent = 'Download failed: ' + String(error.message || error);
       status.classList.add('packing-error');

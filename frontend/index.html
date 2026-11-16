@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <link rel="stylesheet" href="myraa-production.css?v=2">
 <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
-  <link rel="stylesheet" href="packing-picklist.css?v=2">
+  <link rel="stylesheet" href="packing-picklist.css?v=3">
 </head>
 <body>
 
@@ -225,7 +225,7 @@
     <!-- ================= PACKING PICKLIST (READ ONLY) ================= -->
     <section id="view-packing" class="view">
       <header class="view-head">
-        <div><h1>Packing Picklist Generator</h1><p class="sub">Daily brand-wise printable picklist. Same design + size (color optional) merge hoga; one 5-block print page, max 40 rows, overflow next page.</p></div>
+        <div><h1>Packing Picklist Generator</h1><p class="sub">Automatically group by seller/brand, party, product design and size. Same product and size quantities merge; each printed page has up to 40 rows.</p></div>
       </header>
       <div class="packing-notice"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Packing-only export: inventory stock, imported orders aur dispatch <strong>change nahi honge.</strong></div>
       <div class="packing-grid">
@@ -239,16 +239,9 @@
           </label>
           <div class="packing-options">
             <label>Picklist date <input id="packing-date" class="input" type="date" aria-label="Picklist date"></label>
-            <label>Seller / Brand
-              <select id="packing-brand" class="input" aria-label="Seller brand">
-                <option value="AUTO">Auto from SKU / Brand column</option>
-                <option value="TWINS">TWINS — only if complete file belongs to Twins</option>
-                <option value="MODA">MODA — only if complete file belongs to Moda</option>
-              </select>
-            </label>
           </div>
           <label class="packing-check"><input id="packing-audit" type="checkbox"> Extra Review and Source Audit tabs add karo (optional)</label>
-          <p class="hint">Reference-style plain black/white print: 22pt bold, 38pt row height. Party order: NO PARTY → V → NK → O → LP → NEEL → others. Variant tags (A)/(B)/(1)/(2) and trailing color merge; design numbers preserved. <strong>Mixed marketplace file mein row-level brand nahi hai to Twins/Moda infer nahi ho sakta;</strong> separate brand file upload/select karo.</p>
+          <p class="hint">Picklist se brand, party, product, optional color aur size automatically identify honge. Same product + size ki quantity merge hogi. Print layout black-and-white rahega. Ambiguous SKUs audit/review mein rahenge.</p>
           <div class="packing-actions"><button id="packing-preview" class="btn-secondary" type="button" disabled><i class="fa-solid fa-eye"></i> Check & Preview</button><button id="packing-export" class="btn-primary" type="button" disabled><i class="fa-solid fa-file-arrow-down"></i> Download Excel</button></div>
           <p id="packing-status" class="hint" role="status" aria-live="polite">Upload a file to begin.</p>
         </section>
@@ -482,6 +475,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="app.js?v=myraa-production-2"></script>
 <script src="myraa-signature-v3.js?v=3"></script>
-<script src="packing-picklist.js?v=2"></script>
+<script src="packing-picklist.js?v=3"></script>
 </body>
 </html>

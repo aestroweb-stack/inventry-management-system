@@ -1386,7 +1386,8 @@ async def packing_picklist_export(
         logger.exception("Packing picklist generation failed")
         raise HTTPException(status_code=500, detail="Excel generation failed") from exc
     datepart = result["picklist_date"].replace("/", "-")
-    brandpart = brand_override.upper() if brand_override.upper() in {"TWINS", "MODA"} else "ALL-BRANDS"
+    detected_brands = list(result["brand_totals"])
+    brandpart = (re.sub(r"[^A-Za-z0-9_-]", "", detected_brands[0])[:24] or "BRAND") if len(detected_brands) == 1 else "MULTI-BRAND"
     filename = f'MYRAA_Packing_{brandpart}_{datepart}.xlsx'
     return StreamingResponse(
         BytesIO(output),
