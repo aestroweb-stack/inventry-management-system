@@ -1,0 +1,303 @@
+/* MYRAA Separate Workspace Screens v3
+   Product editor and Purchase Challans are NOT side-by-side modules.
+   All existing form controls, validation and API handlers remain intact. */
+
+/* Product creation opens as an app-screen below the app bar, leaving the sidebar
+   available. It is intentionally not a centered popup over blurred content. */
+#add-product-modal.myraa-product-page:not([hidden]) {
+  display:block;
+  position:fixed;
+  inset:71px 0 0 var(--rail-w,242px);
+  z-index:29;
+  width:auto;
+  height:auto;
+  padding:24px clamp(14px,2.6vw,40px) 42px;
+  background:var(--paper,#f5f8f6);
+  backdrop-filter:none;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+}
+body:has(#shell.sidebar-collapsed) #add-product-modal.myraa-product-page:not([hidden]) {left:76px}
+#add-product-modal.myraa-product-page .add-product-card {
+  box-sizing:border-box;
+  width:min(1220px,100%) !important;
+  max-width:1220px !important;
+  max-height:none !important;
+  margin:0 auto;
+  padding:24px clamp(18px,2.1vw,32px) 20px;
+  overflow:visible;
+  background:var(--panel,#fff);
+  border:1px solid var(--line,#d6e6de);
+  border-radius:20px;
+  box-shadow:0 8px 32px rgba(2,54,42,.09);
+}
+#add-product-modal.myraa-product-page .modal-head {
+  position:relative;
+  top:auto;
+  z-index:auto;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
+  gap:3px 18px;
+  margin:-5px 0 18px;
+  padding:4px 0 20px;
+  border-bottom:1px solid var(--line,#d8e6de);
+  background:transparent;
+}
+#add-product-modal.myraa-product-page .modal-head h2 {
+  grid-column:1;
+  font-size:clamp(22px,2.4vw,29px);
+  font-weight:800;
+  letter-spacing:-.035em;
+  margin:0;
+  color:var(--ink,#123b31);
+}
+#add-product-modal.myraa-product-page .modal-head h2 i,
+#view-challans .view-head h1 i,#view-detail .myraa-edit-page-head h1 i {
+  color:var(--primary,#047654);
+  margin-right:9px;
+}
+#add-product-modal.myraa-product-page .myraa-editor-headline {
+  grid-column:1;
+  font-size:12.5px;
+  margin:0;
+  color:var(--ink-soft,#68877a);
+}
+#add-product-modal.myraa-product-page #close-add-product {grid-column:2;grid-row:1/3;align-self:start}
+#add-product-modal.myraa-product-page .add-mode-tabs {
+  display:flex; gap:7px; margin:0 0 22px;
+  border-bottom:1px solid var(--line,#d8e6de);
+  padding-bottom:11px;
+}
+#add-product-modal.myraa-product-page .add-mode-tab {border-radius:9px;font-weight:750}
+#add-product-modal.myraa-product-page #add-product-form {display:block}
+#add-product-modal.myraa-product-page #add-product-form[hidden] {display:none}
+#add-product-modal.myraa-product-page .product-main-fields {
+  display:grid;
+  grid-template-columns:minmax(205px,270px) minmax(0,1fr) !important;
+  gap:clamp(18px,2.4vw,30px);
+  align-items:start;
+}
+#add-product-modal.myraa-product-page .myraa-editor-gallery {
+  display:flex; flex-direction:column; align-items:stretch; gap:12px;
+  min-width:0;
+}
+#add-product-modal.myraa-product-page .photo-pick-box {
+  width:100%; max-width:100%; height:300px;
+  border-radius:15px;
+  background:var(--surface-muted,#f4f7f5);
+  border:1px dashed var(--line,#cbddd2);
+  overflow:hidden;
+}
+#add-product-modal.myraa-product-page .photo-pick-box img {object-fit:contain;}
+#add-product-modal.myraa-product-page .photo-pick-note {
+  display:grid; gap:4px; text-align:left; padding:0 3px; font-size:12px;
+}
+#add-product-modal.myraa-product-page .add-photo-thumbnails {width:100%;display:flex;flex-wrap:wrap;gap:8px}
+#add-product-modal.myraa-product-page .photo-pick .product-photo-angles {
+  display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px; width:100%; margin:0;
+}
+#add-product-modal.myraa-product-page .photo-angle-card {
+  display:flex; flex-direction:column;align-items:center;justify-content:center;
+  min-width:0; min-height:83px; padding:7px 5px; border-radius:10px;
+}
+#add-product-modal.myraa-product-page .photo-angle-card>span:last-of-type {text-align:center}
+#add-product-modal.myraa-product-page .photo-angle-thumb{width:40px;height:37px;flex-basis:37px}
+#add-product-modal.myraa-product-page .product-photo-hint {font-size:11px;line-height:1.45}
+#add-product-modal.myraa-product-page .product-fields {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  column-gap:15px; row-gap:16px; align-content:start;
+}
+#add-product-modal.myraa-product-page .product-fields>.field {grid-column:auto !important;min-width:0;font-size:12px;font-weight:740}
+#add-product-modal.myraa-product-page .product-fields>.field input {
+  height:45px;min-width:0;width:100%;margin-top:6px;
+  background:var(--input-surface,#fff);border-radius:10px;
+}
+#add-product-modal.myraa-product-page .product-fields>.field small {font-size:10px}
+#add-product-modal.myraa-product-page .myraa-editor-sizes {
+  grid-column:1/-1;min-width:0;
+  margin:8px 0 0;padding:17px 0 3px;border-top:1px solid var(--line,#d8e6de);
+}
+#add-product-modal.myraa-product-page .myraa-editor-section-head {
+  display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;
+}
+#add-product-modal.myraa-product-page .myraa-editor-section-head h3 {margin:0;font-size:18px;color:var(--ink,#163a30)}
+#add-product-modal.myraa-product-page .myraa-editor-section-head h3 i {color:var(--primary,#05745b);margin-right:8px}
+#add-product-modal.myraa-product-page .myraa-editor-section-head #add-size-row {
+  margin:0;padding:7px 12px;border:1px solid var(--line,#d3e4db);border-radius:10px;
+  font-size:12px;white-space:nowrap;
+}
+#add-product-modal.myraa-product-page #size-rows {
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  max-height:none;overflow:visible;gap:9px;padding:0;
+}
+#add-product-modal.myraa-product-page .size-row {
+  display:grid;grid-template-columns:minmax(53px,65px) minmax(80px,95px) minmax(0,1fr) 28px;
+  min-width:0;gap:8px;align-items:center;
+  padding:9px 10px;border-radius:11px;
+  border:1px solid var(--line,#dbe7df);
+  background:var(--surface-muted,#f6faf7);
+}
+#add-product-modal.myraa-product-page .size-row .sz {width:100% !important;min-width:0;font-weight:800;text-align:center}
+#add-product-modal.myraa-product-page .size-row .num-in {width:100% !important;min-width:0}
+#add-product-modal.myraa-product-page .size-row .lbl{font-size:10px;color:var(--ink-soft,#668277)}
+#add-product-modal.myraa-product-page .size-advanced-settings summary{white-space:normal;font-size:11px}
+#add-product-modal.myraa-product-page .size-advanced-inputs{display:flex;flex-wrap:wrap}
+#add-product-modal.myraa-product-page .size-row .row-remove {min-width:28px;width:28px}
+#add-product-modal.myraa-product-page .myraa-editor-aliases {
+  margin:22px 0 8px;padding:18px 20px;
+  background:var(--surface-muted,#f7faf8);
+  border:1px solid var(--line,#dbe7df);border-radius:15px;
+}
+#add-product-modal.myraa-product-page .sku-builder-title strong {font-size:18px}
+#add-product-modal.myraa-product-page .sku-builder-rows {max-height:none;overflow:visible;gap:9px}
+#add-product-modal.myraa-product-page .sku-entry-row {
+  display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,.8fr) minmax(0,1.2fr) 38px;
+  padding:9px;background:var(--panel,#fff);border:1px solid var(--line,#dbe7df);border-radius:10px;
+}
+#add-product-modal.myraa-product-page .modal-actions {
+  position:static;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;
+  gap:14px;margin:20px 0 0;padding:18px 0 0;background:transparent;
+  border-top:1px solid var(--line,#d8e6de);
+}
+#add-product-modal.myraa-product-page .modal-actions .btn-primary{height:45px;min-width:175px}
+#add-product-modal.myraa-product-page #add-product-msg{min-width:170px}
+#add-product-modal.myraa-product-page #bulk-product-panel {margin-top:8px;padding:20px;border:1px solid var(--line);border-radius:14px}
+
+/* Edit Product: its OWN full page under Products, with same gallery/fields look. */
+#view-detail .myraa-edit-page-head {
+  display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+  margin:0 0 20px;
+}
+#view-detail .myraa-edit-page-head h1{font-size:clamp(23px,2.4vw,30px);margin:5px 0 2px;letter-spacing:-.035em}
+#view-detail .myraa-edit-page-head .sub{font-size:12px;color:var(--ink-soft,#68877a)}
+#view-detail .detail-head {
+  display:grid;grid-template-columns:minmax(200px,265px) minmax(0,1fr);
+  gap:25px;align-items:start;padding:24px;
+  border-radius:17px;border:1px solid var(--line,#d9e7df);
+  background:var(--panel,#fff);box-shadow:0 7px 25px rgba(2,55,42,.055);
+}
+#view-detail .detail-photo-gallery{width:100%;min-width:0}
+#view-detail .detail-photo-box{width:100%;max-width:100%;min-height:270px;border-radius:13px}
+#view-detail .detail-photo-thumbnails {display:flex;flex-wrap:wrap;gap:8px}
+#view-detail .detail-info {min-width:0}
+#view-detail .detail-info .input {height:44px;border-radius:10px}
+#view-detail .detail-info-row {display:grid;grid-template-columns:1fr 1fr;gap:12px}
+#view-detail .detail-actions{gap:9px;flex-wrap:wrap}
+#view-detail .sub-head{font-size:19px;margin:22px 0 12px}
+#view-detail .seat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px}
+#view-detail .business-product-v2 {max-width:none;margin:18px 0 24px;padding:22px;border-radius:17px;box-shadow:0 7px 25px rgba(2,55,42,.055)}
+#view-detail .business-product-grid-v2{grid-template-columns:1fr;gap:14px}
+#view-detail .business-cost-editor {display:grid;grid-template-columns:minmax(190px,.45fr) minmax(0,1fr);align-items:start;gap:7px 22px}
+#view-detail .business-cost-editor h4{grid-column:1/-1}
+#view-detail .business-cost-editor .field{grid-column:1}
+#view-detail .business-cost-editor .business-save-cost{grid-column:1;justify-self:start}
+#view-detail .business-size-report{grid-column:2;grid-row:2/5;margin:0}
+#view-detail .business-sku-editor {padding:17px 20px}
+#view-detail .business-gallery-quick-add{margin-top:10px}
+
+/* Challans are always a separate FULL WIDTH screen, never a right-hand half. */
+#view-challans{min-width:0;max-width:none}
+#view-challans .myraa-challan-page-head{align-items:center;margin-bottom:22px}
+#view-challans .myraa-challan-page-head h1{font-size:clamp(23px,2.4vw,30px);margin:5px 0 4px;letter-spacing:-.035em}
+#view-challans .myraa-challan-page-head .sub{max-width:90ch}
+#view-challans .myraa-challan-download{display:inline-flex;gap:9px;align-items:center;min-height:42px;font-weight:750;text-decoration:none}
+#view-challans .challan-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:19px}
+#view-challans .challan-summary>div{display:grid;align-content:center;gap:8px;min-height:100px;padding:17px 20px;border-radius:14px}
+#view-challans .challan-summary>div:nth-child(1){background:#e7f7e8;border-color:#ccebd2}
+#view-challans .challan-summary>div:nth-child(2){background:#eaf5ff;border-color:#cde8fb}
+#view-challans .challan-summary>div:nth-child(3){background:#fff3e4;border-color:#f5dfc2}
+#view-challans .challan-summary>div:nth-child(4){background:#f5ebff;border-color:#e8daf9}
+#view-challans .challan-summary strong{font-size:clamp(19px,2.1vw,29px);font-weight:850;letter-spacing:-.03em;color:#0e4939}
+#view-challans .challan-summary small{font-size:12px;font-weight:650;color:#526f65}
+#view-challans .challan-layout{display:flex;flex-direction:column;gap:18px;align-items:stretch}
+#view-challans .challan-layout>.panel,#view-challans .challan-detail-panel {
+  width:100%;padding:22px 24px;margin:0;border:1px solid var(--line,#dce6df);
+  border-radius:18px;background:var(--panel,#fff);box-shadow:0 6px 25px rgba(2,55,42,.045);
+}
+#view-challans #challan-import-form {display:flex;flex-direction:column;gap:12px}
+#view-challans #challan-import-form h2 {font-size:20px;margin:0 0 6px}
+#view-challans .challan-form-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+#view-challans .challan-form-grid .field {min-width:0}
+#view-challans #challan-import-form .input {width:100%;height:43px;border-radius:10px;margin-top:5px}
+#view-challans #challan-import-form input[type=file] {height:auto;min-height:44px;padding:8px}
+#view-challans #challan-import-form>.field:not(.challan-invoice-upload){border:1px dashed var(--line,#cadfd3);background:var(--surface-muted,#f5faf7);border-radius:12px;padding:12px 15px}
+#view-challans .challan-invoice-upload {display:grid;gap:7px;max-width:540px;border:1px dashed var(--primary,#0f8060);padding:12px 16px;border-radius:12px;background:var(--surface-muted,#f6faf7)}
+#view-challans #challan-import-form .btn-primary {align-self:flex-start;min-height:43px;padding:10px 22px}
+#view-challans .challan-batches{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:11px;max-height:none;overflow:visible}
+#view-challans .challan-batch {min-height:78px;background:var(--surface-muted,#f7faf8)}
+#view-challans .challan-detail-panel{margin-top:18px}
+#view-challans .challan-detail-head {align-items:start;padding:2px 0 16px;border-bottom:1px solid var(--line,#dce7df)}
+#view-challans .challan-detail-head h2{font-size:21px}
+#view-challans .challan-lines {width:100%;border-collapse:separate;border-spacing:0}
+#view-challans .challan-lines th{background:var(--surface-muted,#eaf6ef);font-size:12px;color:var(--ink,#153c31)}
+#view-challans .challan-lines td{font-size:12px}
+#view-challans .challan-lines input{border-radius:9px}
+#view-challans .challan-actions{justify-content:flex-start;gap:11px}
+#view-challans #challan-push{margin-left:auto;font-weight:800;min-height:43px}
+#view-challans .challan-attachments{margin-top:22px}
+#view-challans .challan-scan-picker{min-height:104px;align-items:center;justify-content:center;padding:20px;min-width:220px}
+
+/* Dark theme preserves the requested readable teal/cream balance. */
+:root[data-theme="dark"] #add-product-modal.myraa-product-page:not([hidden]) {background:#061e1b}
+:root[data-theme="dark"] #view-challans .challan-summary>div:nth-child(1){background:#10382e;border-color:#285a49}
+:root[data-theme="dark"] #view-challans .challan-summary>div:nth-child(2){background:#14364a;border-color:#27556b}
+:root[data-theme="dark"] #view-challans .challan-summary>div:nth-child(3){background:#45311f;border-color:#665039}
+:root[data-theme="dark"] #view-challans .challan-summary>div:nth-child(4){background:#352943;border-color:#52416b}
+:root[data-theme="dark"] #view-challans .challan-summary strong{color:#e7fff3}
+:root[data-theme="dark"] #view-challans .challan-summary small{color:#afcfc5}
+:root[data-theme="dark"] #add-product-modal .size-row,
+:root[data-theme="dark"] #add-product-modal .sku-entry-row,
+:root[data-theme="dark"] #add-product-modal .product-sku-builder,
+:root[data-theme="dark"] #view-challans .challan-batch {background:var(--surface-muted,#10332b);border-color:var(--line,#275349)}
+
+@media(max-width:1100px){
+  #add-product-modal.myraa-product-page .product-main-fields{grid-template-columns:205px minmax(0,1fr)!important;gap:16px}
+  #add-product-modal.myraa-product-page #size-rows{grid-template-columns:1fr}
+  #view-challans .challan-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  #add-product-modal.myraa-product-page:not([hidden]){
+    inset:var(--topbar-h,52px) 0 0;
+    padding:12px 10px 26px;
+    z-index:29;
+  }
+  #add-product-modal.myraa-product-page .add-product-card{padding:16px 14px 18px;border-radius:15px}
+  #add-product-modal.myraa-product-page .product-main-fields{grid-template-columns:1fr!important}
+  #add-product-modal.myraa-product-page .myraa-editor-gallery {display:grid;grid-template-columns:135px minmax(0,1fr);gap:9px;align-items:start}
+  #add-product-modal.myraa-product-page .photo-pick-box{height:178px;grid-row:span 3}
+  #add-product-modal.myraa-product-page .photo-pick .product-photo-angles{grid-column:1/-1}
+  #add-product-modal.myraa-product-page .photo-pick .product-photo-hint{grid-column:1/-1}
+  #add-product-modal.myraa-product-page .photo-pick-note{font-size:10px}
+  #add-product-modal.myraa-product-page .product-fields{grid-template-columns:1fr 1fr;gap:10px}
+  #add-product-modal.myraa-product-page .product-fields>.field {grid-column:1/-1!important}
+  #add-product-modal.myraa-product-page #size-rows{grid-template-columns:1fr}
+  #add-product-modal.myraa-product-page .size-row {grid-template-columns:60px 83px minmax(0,1fr) 28px}
+  #add-product-modal.myraa-product-page .sku-entry-row{grid-template-columns:minmax(0,1fr) 32px}
+  #add-product-modal.myraa-product-page .sku-entry-row .sku-entry-code,
+  #add-product-modal.myraa-product-page .sku-entry-row .sku-entry-market {grid-column:1/-1}
+  #add-product-modal.myraa-product-page .sku-entry-row .sku-entry-size{grid-column:1}
+  #add-product-modal.myraa-product-page .sku-entry-row .sku-entry-remove{grid-column:2;grid-row:3}
+  #view-detail .detail-head {grid-template-columns:1fr;padding:15px;gap:13px}
+  #view-detail .detail-photo-box{max-height:220px}
+  #view-detail .detail-info-row{grid-template-columns:1fr}
+  #view-detail .business-cost-editor{display:block;padding:14px}
+  #view-detail .business-size-report{margin-top:12px}
+  #view-detail .business-product-v2{padding:14px}
+  #view-challans .challan-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  #view-challans .challan-summary>div{padding:12px;min-height:85px}
+  #view-challans .challan-form-grid{grid-template-columns:1fr}
+  #view-challans .challan-layout>.panel,#view-challans .challan-detail-panel{padding:15px}
+  #view-challans .challan-detail-head{flex-direction:column}
+  #view-challans #challan-push{margin-left:0}
+}
+@media(prefers-reduced-motion:reduce){
+  #add-product-modal.myraa-product-page *{scroll-behavior:auto!important}
+}
+@media(max-width:760px){
+  /* Keep the page title clear of the sticky mobile search bar. */
+  #view-challans{padding-top:12px}
+}

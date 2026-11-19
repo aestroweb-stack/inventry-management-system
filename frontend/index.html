@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
   <link rel="stylesheet" href="packing-picklist.css?v=4">
   <link rel="stylesheet" href="business-workspace.css?v=2">
+  <link rel="stylesheet" href="product-challan-pages.css?v=3">
 </head>
 <body>
 
@@ -141,7 +142,7 @@
 
     <!-- ================= PRODUCT DETAIL ================= -->
     <section id="view-detail" class="view">
-      <button id="detail-back" class="link-btn" type="button">← Back to Products</button>
+      <header class="myraa-edit-page-head"><div><span class="section-eyebrow">PRODUCT CATALOG</span><h1><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i> Edit Product</h1><p class="sub">Edit photos, master SKU, size stock, product cost and linked marketplace SKUs.</p></div><button id="detail-back" class="btn-secondary" type="button"><i class="fa-solid fa-arrow-left"></i> Back to Products</button></header>
       <div id="detail-content"></div>
     </section>
 
@@ -210,7 +211,7 @@
 
     <!-- ================= ORDERS ================= -->
     <section id="view-challans" class="view">
-      <header class="view-head"><div><h1>Purchase Challans &amp; Inbound Inventory</h1><p class="sub">Manage supplier orders, pending receipts, and push fully received stock to inventory once.</p></div></header>
+      <header class="view-head myraa-challan-page-head"><div><span class="section-eyebrow">SUPPLIER PURCHASES</span><h1><i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i> Purchase Challans</h1><p class="sub">Supplier orders, received pieces, pending stock and invoice documents in one place.</p></div><a class="btn-secondary myraa-challan-download" href="/api/purchase-challans/template" download="MYRAA_Challan_3_Column_Template.xlsx"><i class="fa-solid fa-file-excel"></i> Download Excel Template</a></header>
       <div class="challan-summary" id="challan-summary"><span>Loading challans…</span></div>
       <div class="challan-layout">
         <form id="challan-import-form" class="panel challan-form">
@@ -224,7 +225,6 @@
           <label class="field">Upload Excel / CSV<input class="input" type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
           <p class="hint">Simple Excel: <strong>Product Name · Size · Qty</strong>. After import, enter how many pieces arrived and their purchase rate before pushing to stock.</p>
           <label class="field challan-invoice-upload">Challan / invoice scan (optional)<input class="input" type="file" name="invoice_images" accept="image/jpeg,image/png,image/webp,application/pdf" multiple><small class="hint">Upload up to 12 photos/PDFs for this entire bill, including multiple products.</small></label>
-          <a class="link-btn" href="/api/purchase-challans/template" download="MYRAA_Challan_3_Column_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download 3-column Excel template</a>
           <button type="submit" class="btn-primary"><i class="fa-solid fa-upload"></i> Import Pending Challan</button>
           <p id="challan-import-message" class="msg" aria-live="polite"></p>
         </form>
@@ -510,5 +510,6 @@
 <script src="myraa-signature-v3.js?v=3"></script>
 <script src="packing-picklist.js?v=4"></script>
 <script src="business-workspace.js?v=2"></script>
+<script src="product-challan-pages.js?v=3"></script>
 </body>
 </html>
