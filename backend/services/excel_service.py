@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from models import Product, Variant, OrderUpload, OrderLine, OrderLineStatus, TransactionType
-from business_models import MarketplaceSkuAlias
+from business_models import MarketplaceSkuAlias, ProductMarketplaceAlias
 from services import reorder_service
 from services.inventory_service import apply_stock_change, InsufficientStockError
 from services.alert_service import check_variant_alert
@@ -259,6 +259,9 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
     for mapped in db.query(MarketplaceSkuAlias).all():
         for alias in _code_aliases(mapped.normalized_code):
             exact.setdefault(alias, {})[mapped.variant_id] = next((v for v in variants if v.id == mapped.variant_id), None)
+    # Whole-product aliases only resolve when an order supplies an identifiable Size.
+    product_aliases = {a.normalized_code: a.product_id for a in db.query(ProductMarketplaceAlias).all()}
+    product_size = {(v.product_id, v.size.upper()): v for v in variants}
     cross_brand_index = _build_cross_brand_variant_index(variants)
 
     changed = 0
@@ -275,6 +278,14 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
             v = candidates[0]
         else:
             v = pair.get((base, inferred_size)) if inferred_size else None
+            # Exact product-wide alias is higher priority than any fuzzy guess.
+            alias_product_id = next((product_aliases.get(x) for x in (raw, base) if x in product_aliases), None)
+            if not v and alias_product_id:
+                if not inferred_size:
+                    continue  # never guess a size from a product-wide SKU
+                v = product_size.get((alias_product_id, inferred_size))
+                if not v:
+                    continue  # unknown size: must remain unmapped
             if not v:
                 scored = []
                 for candidate in variants:
@@ -395,6 +406,14 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
                 for alias in _code_aliases(mapping.normalized_code):
                     code_map[alias][variant.id] = variant
 
+    # Exact product-wide mappings. Only match if size was supplied/inferred;
+    # ambiguous no-size order rows must NEVER fall through to fuzzy matching.
+    product_alias_map: dict[str, int] = {}
+    for code_chunk in _chunks(sorted(set(expanded_codes) | set(all_product_skus))):
+        for mapping in db.query(ProductMarketplaceAlias).filter(ProductMarketplaceAlias.normalized_code.in_(code_chunk)).all():
+            for code in _code_aliases(mapping.normalized_code):
+                product_alias_map[code] = mapping.product_id
+
     # The code-map query above is intentionally chunked by raw marketplace
     # codes. Now query the expanded base Product SKU list as well.
     for product_chunk in _chunks(all_product_skus):
@@ -413,6 +432,7 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
         .all()
     )
     cross_brand_index = _build_cross_brand_variant_index(fuzzy_variants)
+    product_size_index = {(v.product_id, v.size.upper()): v for v in fuzzy_variants}
 
     def resolve(cands, size):
         ambiguous = False
@@ -445,7 +465,16 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
                 if v:
                     return v, False
 
-        # 3) Fuzzy marketplace matching. Size is inferred from the trailing
+        # 3) Exact product-wide marketplace SKU + explicit/inferred Size.
+        for raw, base, effective_size in prepared:
+            pid = product_alias_map.get(raw.upper()) or product_alias_map.get(base.upper())
+            if pid is not None:
+                if not effective_size:
+                    return None, True  # Size missing: NEVER default to a random variant.
+                variant = product_size_index.get((pid, effective_size))
+                return (variant, False) if variant else (None, True)
+
+        # 4) Fuzzy marketplace matching. Size is inferred from the trailing
         # token when possible, so M cannot tie with L/XL/XXL. This fixes
         # common real-world variants such as MAROOM-M -> MAROON, M.
         best = None

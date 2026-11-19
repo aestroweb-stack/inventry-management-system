@@ -24,7 +24,7 @@ from database import Base, engine, get_db, SessionLocal
 import models
 import business_models
 import schemas
-from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias
+from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias, add_product_alias
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
     barcode_service, bulk_stock_service, bulk_product_service,
@@ -359,6 +359,7 @@ def _product_out(p: models.Product) -> dict:
         "vendor": {"id": p.vendor.id, "name": p.vendor.name, "contact": p.vendor.contact} if p.vendor else None,
         "variants": [_variant_out(v) for v in sorted(live_variants, key=lambda v: (bulk_stock_service.SIZE_ORDER.get(v.size, 99), v.size))],
         "total_stock": sum(v.current_stock for v in live_variants),
+        "product_aliases": [{"id": a.id, "marketplace": a.marketplace, "sku": a.alias_code} for a in sorted(p.product_aliases, key=lambda x: x.id)],
         "unit_cost": float(p.cost_record.unit_cost) if p.cost_record else None,
         "stock_cost_value": float(sum((v.cost_record.unit_cost if v.cost_record else p.cost_record.unit_cost if p.cost_record else 0) * max(v.current_stock, 0) for v in live_variants if v.last_counted_at)),
     }
@@ -672,6 +673,12 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
             raise HTTPException(400, f"Duplicate size '{v.size}' in request.")
         sizes_seen.add(v.size.strip().upper())
 
+    # Reject repeated external SKUs across product-wide / size-specific scopes
+    # before opening the create transaction, so there is no ambiguous mapping.
+    alias_codes = [a.sku.strip().upper() for a in payload.marketplace_aliases]
+    if len(alias_codes) != len(set(alias_codes)):
+        raise HTTPException(422, "Duplicate marketplace SKU in this product. Use one mapping per external SKU.")
+
     product = models.Product(sku=sku, name=payload.name, category=payload.category, vendor_id=payload.vendor_id)
     db.add(product)
     db.flush()
@@ -697,6 +704,9 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
         if input_variant.unit_cost is not None:
             upsert_variant_cost(db, saved.id, input_variant.unit_cost)
     for alias in payload.marketplace_aliases:
+        if not alias.size:
+            add_product_alias(db, product, alias.marketplace, alias.sku)
+            continue
         saved = next((v for v in product.variants if v.size == alias.size.strip().upper()), None)
         if not saved:
             raise HTTPException(422, f"Alias size {alias.size} is not part of this product")

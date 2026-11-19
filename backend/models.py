@@ -78,6 +78,7 @@ class Product(Base):
     variants = relationship("Variant", back_populates="product", cascade="all, delete-orphan")
     reference_images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
     cost_record = relationship("ProductCost", back_populates="product", uselist=False, cascade="all, delete-orphan")
+    product_aliases = relationship("ProductMarketplaceAlias", back_populates="product", cascade="all, delete-orphan")
 
 
 class ProductImage(Base):

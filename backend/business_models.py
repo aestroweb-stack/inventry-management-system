@@ -52,6 +52,7 @@ class PurchaseChallan(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
     posted_at = Column(DateTime(timezone=True), nullable=True)
     lines = relationship("PurchaseChallanLine", back_populates="challan", cascade="all, delete-orphan", order_by="PurchaseChallanLine.id")
+    attachments = relationship("PurchaseChallanAttachment", back_populates="challan", cascade="all, delete-orphan", order_by="PurchaseChallanAttachment.id")
 
 
 class PurchaseChallanLine(Base):
@@ -67,3 +68,31 @@ class PurchaseChallanLine(Base):
     unit_cost = Column(Numeric(12, 2), nullable=True, default=None)
     challan = relationship("PurchaseChallan", back_populates="lines")
     __table_args__ = (UniqueConstraint("challan_id", "sku", "size", name="uq_challan_sku_size"),)
+
+
+class ProductMarketplaceAlias(Base):
+    """Whole-product external SKU: requires explicit/inferable Size to match an order.
+
+    Dedicated additive table avoids an ALTER on the existing size-scoped mappings.
+    """
+    __tablename__ = "myraa_product_marketplace_aliases"
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
+    marketplace = Column(String(80), nullable=False, default="OTHER")
+    alias_code = Column(String(180), nullable=False)
+    normalized_code = Column(String(180), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    product = relationship("Product", back_populates="product_aliases")
+
+
+class PurchaseChallanAttachment(Base):
+    """Private scanned invoice/challan image, shared by all items in one bill."""
+    __tablename__ = "myraa_challan_attachments"
+    id = Column(Integer, primary_key=True)
+    challan_id = Column(Integer, ForeignKey("myraa_purchase_challans.id"), nullable=False, index=True)
+    original_filename = Column(String(255), nullable=False)
+    storage_filename = Column(String(120), unique=True, nullable=False)
+    content_type = Column(String(80), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    challan = relationship("PurchaseChallan", back_populates="attachments")

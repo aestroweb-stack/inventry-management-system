@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="myraa-production.css?v=2">
 <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
   <link rel="stylesheet" href="packing-picklist.css?v=4">
-  <link rel="stylesheet" href="business-workspace.css?v=1">
+  <link rel="stylesheet" href="business-workspace.css?v=2">
 </head>
 <body>
 
@@ -222,8 +222,9 @@
             <label class="field">Order Date<input class="input" name="order_date" type="date" required></label>
           </div>
           <label class="field">Upload Excel / CSV<input class="input" type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
-          <p class="hint">Excel columns: SKU, Product Name, Size, Qty, Unit Cost, Category (optional). You can fill missing costs in the receipt table before pushing inventory.</p>
-          <a class="link-btn" href="assets/purchase-challan-template.xlsx" download="MYRAA_Purchase_Challan_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download Excel template</a>
+          <p class="hint">Simple Excel: <strong>Product Name · Size · Qty</strong>. After import, enter how many pieces arrived and their purchase rate before pushing to stock.</p>
+          <label class="field challan-invoice-upload">Challan / invoice scan (optional)<input class="input" type="file" name="invoice_images" accept="image/jpeg,image/png,image/webp,application/pdf" multiple><small class="hint">Upload up to 12 photos/PDFs for this entire bill, including multiple products.</small></label>
+          <a class="link-btn" href="/api/purchase-challans/template" download="MYRAA_Challan_3_Column_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download 3-column Excel template</a>
           <button type="submit" class="btn-primary"><i class="fa-solid fa-upload"></i> Import Pending Challan</button>
           <p id="challan-import-message" class="msg" aria-live="polite"></p>
         </form>
@@ -393,8 +394,10 @@
           <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
           <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>
           <label class="field">Default Unit Cost (₹)<input name="unit_cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 240.00" class="input"><small class="hint">Used for sizes without their own cost.</small></label>
-          <label class="field">Marketplace SKU Mappings (optional)<textarea name="marketplace_aliases" class="input" rows="3" placeholder="S | Myntra | MYNTRA-STYLE-S
-M | Ajio | AJIO-STYLE-M"></textarea><small class="hint">One per line: SIZE | MARKETPLACE | SKU. Each external SKU maps to one exact size.</small></label>
+          <div class="product-sku-builder" id="product-sku-builder" aria-label="Marketplace SKU aliases">
+            <div class="sku-builder-title"><div><strong>Marketplace SKUs</strong><small>All SKUs link to the Master SKU above.</small></div><button id="new-product-add-alias" class="btn-secondary" type="button"><i class="fa-solid fa-plus"></i> Add SKU</button></div>
+            <div id="new-product-alias-rows" class="sku-builder-rows"></div>
+          </div>
         </div>
       </div>
 
@@ -503,9 +506,9 @@ M | Ajio | AJIO-STYLE-M"></textarea><small class="hint">One per line: SIZE | MAR
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=myraa-production-2"></script>
+<script src="app.js?v=myraa-product-v2"></script>
 <script src="myraa-signature-v3.js?v=3"></script>
 <script src="packing-picklist.js?v=4"></script>
-<script src="business-workspace.js?v=1"></script>
+<script src="business-workspace.js?v=2"></script>
 </body>
 </html>

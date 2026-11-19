@@ -12,7 +12,7 @@ class VendorOut(BaseModel):
 
 
 class MarketplaceAliasCreate(BaseModel):
-    size: str
+    size: Optional[str] = None
     marketplace: str = "OTHER"
     sku: str
 
@@ -64,6 +64,7 @@ class VariantOut(BaseModel):
 
 
 class ProductOut(BaseModel):
+    product_aliases: List[dict] = Field(default_factory=list)
     unit_cost: Optional[float] = None
     stock_cost_value: float = 0
     model_config = ConfigDict(from_attributes=True)

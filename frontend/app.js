@@ -821,9 +821,7 @@ function addSizeRow(size = "") {
   row.innerHTML = `
     <input class="input sz size-size" value="${esc(size)}" placeholder="Size">
     <div><div class="lbl">Stock</div><input class="input num-in size-stock" type="number" value="" placeholder="0" min="0" inputmode="numeric"></div>
-    <div><div class="lbl">Unit Cost ₹</div><input class="input num-in size-cost" type="number" step="0.01" min="0" placeholder="Default" inputmode="decimal"></div>
-    <div><div class="lbl">Alert below</div><input class="input num-in size-threshold" type="number" value="5" min="0"></div>
-    <div><div class="lbl">Target</div><input class="input num-in size-target" type="number" value="20" min="0"></div>
+    <details class="size-advanced-settings"><summary>Alert & target</summary><div class="size-advanced-inputs"><label><small>Alert below</small><input class="input num-in size-threshold" type="number" value="5" min="0"></label><label><small>Target stock</small><input class="input num-in size-target" type="number" value="20" min="0"></label></div></details>
     <button type="button" class="row-remove" aria-label="Remove size"><i class="fa-solid fa-trash-can"></i></button>`;
   row.querySelector(".row-remove").addEventListener("click", () => row.remove());
   row.querySelectorAll("input").forEach((input) => input.addEventListener("keydown", (e) => {
@@ -851,6 +849,7 @@ function addSizeRow(size = "") {
 function resetAddForm() {
   $("size-rows").innerHTML = "";
   STANDARD_SIZES.forEach((s) => addSizeRow(s));
+  window.myraaResetProductAliases?.();
   addPhotoFiles = [];
   addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
   addPhotoObjectUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -882,7 +881,6 @@ $("add-product-form").addEventListener("submit", async (e) => {
     initial_stock: Number(row.querySelector(".size-stock").value) || 0,
     reorder_threshold: Number(row.querySelector(".size-threshold").value) || 5,
     target_stock_level: Number(row.querySelector(".size-target").value) || 20,
-    unit_cost: row.querySelector(".size-cost").value === "" ? null : Number(row.querySelector(".size-cost").value),
   })).filter((v) => v.size);
   if (!variants.length) { msg.textContent = "Add at least one size."; msg.className = "msg error"; return; }
 
@@ -890,12 +888,7 @@ $("add-product-form").addEventListener("submit", async (e) => {
   submitButton.dataset.originalText = submitButton.textContent;
   submitButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving product…';
   try {
-    const aliasText = form.elements.namedItem("marketplace_aliases")?.value || "";
-    const marketplace_aliases = aliasText.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map((line, index) => {
-      const parts = line.split("|").map(s => s.trim());
-      if (parts.length !== 3 || parts.some(x => !x)) throw new Error(`Marketplace alias line ${index + 1}: use SIZE | MARKETPLACE | SKU`);
-      return { size: parts[0], marketplace: parts[1], sku: parts[2] };
-    });
+    const marketplace_aliases = window.myraaCollectNewProductAliases?.() || [];
     const data = await apiPost(`${API}/products`, {
       unit_cost: form.elements.namedItem("unit_cost").value === "" ? null : Number(form.elements.namedItem("unit_cost").value),
       marketplace_aliases,
