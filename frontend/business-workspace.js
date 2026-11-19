@@ -197,7 +197,29 @@
   // Supplier challans: invoice image(s) belong to the entire bill, not a line.
   const challanView = $('view-challans');
   if (!challanView) return;
-  let selectedId=null, selected=null;
+  let selectedId=null, selected=null, challanRows=[], challanPage=0, challanTotal=0;
+  const PAGE_SIZE=6;
+  let searchTimer=null, requestVersion=0;
+  function renderChallanList(){
+    const listing=$('challan-batches');if(!listing)return;
+    const page=challanRows;
+    const totalPages=Math.max(1,Math.ceil(challanTotal/PAGE_SIZE));
+    listing.innerHTML=page.map(b=>`<button type="button" class="challan-batch ${b.id===selectedId?'is-selected':''}" data-id="${b.id}"><span><b>${E(b.party_name)} · ${E(b.challan_no)}</b><small>${E(b.order_date)} · ${E(b.status)} · Invoice ${E(b.invoice_no||'—')}</small></span><strong>${b.pending} pending / ${b.ordered} pcs</strong></button>`).join('')||'<p class="hint">No challans match your search/date. Try clearing the filters.</p>';
+    listing.querySelectorAll('button[data-id]').forEach(button=>button.addEventListener('click',()=>openChallan(Number(button.dataset.id))));
+    if($('challan-page-status'))$('challan-page-status').textContent=challanTotal ? `${challanPage*PAGE_SIZE+1}–${Math.min((challanPage+1)*PAGE_SIZE,challanTotal)} of ${challanTotal}`:'0 of 0';
+    if($('challan-page-prev'))$('challan-page-prev').disabled=challanPage===0;
+    if($('challan-page-next'))$('challan-page-next').disabled=challanPage>=totalPages-1;
+  }
+  const searchChallans=()=>{challanPage=0;clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadChallans(),280);};
+  $('challan-search')?.addEventListener('input',searchChallans);
+  $('challan-filter-date')?.addEventListener('change',()=>{challanPage=0;loadChallans();});
+  $('challan-clear-filters')?.addEventListener('click',()=>{
+    if($('challan-search'))$('challan-search').value='';
+    if($('challan-filter-date'))$('challan-filter-date').value='';
+    challanPage=0;loadChallans();
+  });
+  $('challan-page-prev')?.addEventListener('click',()=>{if(challanPage>0){challanPage--;loadChallans();}});
+  $('challan-page-next')?.addEventListener('click',()=>{if((challanPage+1)*PAGE_SIZE<challanTotal){challanPage++;loadChallans();}});
   async function uploadScans(batchId, files) {
     if (!files?.length) return;
     if (files.length>12) throw new Error('Maximum 12 invoice scans per challan');
@@ -207,13 +229,18 @@
   async function loadChallans() {
     const listing=$('challan-batches'),summary=$('challan-summary');
     try {
-      const data=await json('/api/purchase-challans');
+      const version=++requestVersion;
+      const query=new URLSearchParams({q:($('challan-search')?.value||'').trim(),date_filter:$('challan-filter-date')?.value||'',limit:String(PAGE_SIZE),offset:String(challanPage*PAGE_SIZE)});
+      const data=await json('/api/purchase-challans?'+query.toString());
+      if(version!==requestVersion)return;
+      if(challanPage>0 && !data.items.length && data.total>0){challanPage=Math.max(0,Math.ceil(data.total/PAGE_SIZE)-1);return loadChallans();}
       summary.innerHTML=`<div><small>Total ordered</small><strong>${Number(data.ordered_pieces).toLocaleString('en-IN')} pcs</strong></div>
         <div><small>Received</small><strong>${Number(data.received_pieces||0).toLocaleString('en-IN')} pcs</strong></div>
         <div><small>Pending</small><strong>${Number(data.pending_pieces).toLocaleString('en-IN')} pcs</strong></div>
         <div><small>Known received goods value</small><strong>${money(data.received_value_known)}</strong>${data.received_unpriced_pieces?`<small>${data.received_unpriced_pieces} received pcs need cost</small>`:''}</div>`;
-      listing.innerHTML=data.items.map(b=>`<button type="button" class="challan-batch ${b.id===selectedId?'is-selected':''}" data-id="${b.id}"><span><b>${E(b.party_name)} · ${E(b.challan_no)}</b><small>${E(b.order_date)} · ${E(b.status)} · ${E(b.filename)}</small></span><strong>${b.pending} pending / ${b.ordered}</strong></button>`).join('')||'<p class="hint">No challans yet. Import the 3-column Excel to begin.</p>';
-      listing.querySelectorAll('button[data-id]').forEach(button=>button.addEventListener('click',()=>openChallan(Number(button.dataset.id))));
+      challanRows=data.items||[];
+      challanTotal=Number(data.total||0);
+      renderChallanList();
       if(selectedId) await openChallan(selectedId);
     }catch(err){listing.innerHTML=`<p class="business-message is-error">${E(err.message)}</p>`;}
   }

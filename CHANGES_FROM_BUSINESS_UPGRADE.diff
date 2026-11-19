@@ -1,0 +1,1262 @@
+--- a/backend/business_api.py
++++ b/backend/business_api.py
+@@ -5,24 +5,37 @@
+ 
+ import hashlib
+ import re
++import os
++import io
++import uuid
++from pathlib import Path
++from zipfile import ZipFile, ZIP_DEFLATED
++from xml.sax.saxutils import escape as xml_escape
++from PIL import Image, UnidentifiedImageError
+ from collections import defaultdict
+ from datetime import datetime, timezone, date
+ from decimal import Decimal, InvalidOperation
+ from typing import Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Query
++from fastapi.responses import FileResponse, StreamingResponse
+ from pydantic import BaseModel, Field
+ from sqlalchemy import func, or_
+ from sqlalchemy.orm import Session, joinedload, selectinload
+ 
+ from database import get_db
+ import models
+-from business_models import ProductCost, VariantCost, MarketplaceSkuAlias, PurchaseChallan, PurchaseChallanLine
++from business_models import ProductCost, VariantCost, MarketplaceSkuAlias, ProductMarketplaceAlias, PurchaseChallan, PurchaseChallanLine, PurchaseChallanAttachment
+ from services import excel_service, inventory_service, alert_service
+ from services.table_reader import read_table, clean_code, to_int
+ 
+ router = APIRouter(prefix="/api", tags=["Finance and purchase challans"])
+ MAX_EXCEL_SIZE = 12 * 1024 * 1024
++MAX_INVOICE_BYTES = 10 * 1024 * 1024
++MAX_CHALLAN_ATTACHMENTS = 12
++# PRIVATE directory: never mount it with FastAPI StaticFiles.
++CHALLAN_IMAGE_DIR = Path(os.getenv("PURCHASE_CHALLAN_FILE_DIR") or str(Path(__file__).resolve().parent / "private_challan_files")).resolve()
++
+ 
+ 
+ def cost_decimal(value, name="Unit cost"):
+@@ -70,6 +83,9 @@
+     normalized = normalize_alias(alias)
+     if normalized in {variant.variant_code.upper(), variant.product.sku.upper()}:
+         return None  # the master code is already matched by the catalog
++    product_mapping = db.query(ProductMarketplaceAlias).filter_by(normalized_code=normalized).first()
++    if product_mapping:
++        raise HTTPException(409, "SKU already used as a whole-product mapping; choose another SKU")
+     existing = db.query(MarketplaceSkuAlias).filter_by(normalized_code=normalized).first()
+     if existing:
+         if existing.variant_id != variant.id:
+@@ -94,13 +110,42 @@
+     return item
+ 
+ 
++def add_product_alias(db, product: models.Product, marketplace: str, alias: str):
++    """Whole-product SKU. Orders MUST supply an explicit or inferred size."""
++    normalized = normalize_alias(alias)
++    existing = db.query(ProductMarketplaceAlias).filter_by(normalized_code=normalized).first()
++    if existing:
++        if existing.product_id != product.id:
++            raise HTTPException(409, "Marketplace SKU already belongs to another product")
++        existing.marketplace = (marketplace or "OTHER").strip().upper()[:80]
++        return existing
++    if db.query(MarketplaceSkuAlias).filter_by(normalized_code=normalized).first():
++        raise HTTPException(409, "SKU already mapped to a specific size")
++    if db.query(models.Variant).filter(
++        or_(models.Variant.variant_code == normalized,
++            models.Variant.seller_sku_code == normalized,
++            models.Variant.marketplace_sku_code == normalized),
++    ).first():
++        raise HTTPException(409, "SKU already assigned to a stockable size")
++    direct = db.query(models.Product).filter(models.Product.sku == normalized).first()
++    if direct:
++        if direct.id == product.id:
++            return None  # canonical Master SKU already matched by product + Size
++        raise HTTPException(409, "SKU is another product's Master SKU")
++    item = ProductMarketplaceAlias(product_id=product.id,
++        marketplace=(marketplace or "OTHER").strip().upper()[:80],
++        alias_code=alias.strip(), normalized_code=normalized)
++    db.add(item)
++    return item
++
++
+ class CostsAndAliases(BaseModel):
+     unit_cost: Optional[Decimal] = Field(default=None, ge=0, le=99999999)
+     size_costs: dict[str, Optional[Decimal]] = Field(default_factory=dict)
+ 
+ 
+ class AliasRequest(BaseModel):
+-    size: str
++    size: Optional[str] = None
+     marketplace: str = "OTHER"
+     sku: str
+ 
+@@ -127,13 +172,18 @@
+     product = db.query(models.Product).filter(models.Product.sku == sku.strip().upper(), models.Product.is_deleted.is_(False)).first()
+     if not product:
+         raise HTTPException(404, "Product not found")
+-    variant = next((v for v in product.variants if not v.is_deleted and v.size.upper() == payload.size.strip().upper()), None)
+-    if not variant:
+-        raise HTTPException(422, "Choose a size belonging to this product")
+-    add_alias(db, variant, payload.marketplace, payload.sku)
++    if payload.size:
++        variant = next((v for v in product.variants if not v.is_deleted and v.size.upper() == payload.size.strip().upper()), None)
++        if not variant:
++            raise HTTPException(422, "Choose a size belonging to this product")
++        add_alias(db, variant, payload.marketplace, payload.sku)
++        resolved_size = variant.size
++    else:
++        add_product_alias(db, product, payload.marketplace, payload.sku)
++        resolved_size = None
+     db.commit()
+     excel_service.reconcile_unmapped_order_lines(db)
+-    return {"status": "saved", "sku": product.sku, "size": variant.size}
++    return {"status": "saved", "sku": product.sku, "size": resolved_size, "scope": "size" if resolved_size else "product"}
+ 
+ 
+ @router.delete("/products/{sku}/marketplace-aliases/{alias_id}")
+@@ -143,6 +193,19 @@
+     ).first()
+     if not alias:
+         raise HTTPException(404, "SKU mapping not found")
++    db.delete(alias)
++    db.commit()
++    return {"status": "deleted"}
++
++
++@router.delete("/products/{sku}/product-marketplace-aliases/{alias_id}")
++def remove_whole_product_alias(sku: str, alias_id: int, db: Session = Depends(get_db)):
++    alias = db.query(ProductMarketplaceAlias).join(models.Product).filter(
++        ProductMarketplaceAlias.id == alias_id,
++        models.Product.sku == sku.strip().upper(),
++    ).first()
++    if not alias:
++        raise HTTPException(404, "Product-wide SKU mapping not found")
+     db.delete(alias)
+     db.commit()
+     return {"status": "deleted"}
+@@ -228,7 +291,7 @@
+     return None
+ 
+ 
+-def parse_challan_file(blob: bytes, filename: str):
++def parse_challan_file(blob: bytes, filename: str, db: Session | None = None):
+     if not blob or len(blob) > MAX_EXCEL_SIZE:
+         raise HTTPException(422, "Excel file must be between 1 byte and 12 MB")
+     try:
+@@ -240,7 +303,27 @@
+     merged = defaultdict(lambda: {"quantity": 0})
+     for idx, raw in enumerate(df.to_dict("records"), 2):
+         sku = (pick(raw, SKU_FIELDS) or "").strip().upper()
++        name = (pick(raw, NAME_FIELDS) or "").strip()
+         size = (pick(raw, SIZE_FIELDS) or "").strip().upper()
++        # Simple 3-column supplier sheet: Product Name, Size, Qty.
++        if not sku and name:
++            if db is not None:
++                matches = db.query(models.Product).filter(
++                    func.lower(models.Product.name) == name.lower(),
++                    models.Product.is_deleted.is_(False),
++                ).limit(3).all()
++                if len(matches) > 1:
++                    raise HTTPException(422, f"Row {idx}: product name '{name}' matches multiple Master SKUs; use SKU column to disambiguate")
++                if matches:
++                    sku = matches[0].sku
++            if not sku:
++                sku = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")[:64]
++                if not sku:
++                    raise HTTPException(422, f"Row {idx}: Product Name must contain letters or digits")
++                if db is not None:
++                    conflict = db.query(models.Product).filter_by(sku=sku).first()
++                    if conflict and conflict.name.lower() != name.lower():
++                        raise HTTPException(422, f"Row {idx}: generated SKU collision; supply Master SKU column")
+         if not size:
+             match = re.search(r"(?:[_\-\s]+)(5XL|4XL|3XL|XXL|XL|XS|S|M|L|\d{2,3})$", sku)
+             if match:
+@@ -256,7 +339,7 @@
+             raise HTTPException(422, f"Row {idx}: SKU/size too long")
+         cost = cost_decimal(pick(raw, COST_FIELDS), f"Row {idx} cost")
+         key = (sku, size)
+-        name = (pick(raw, NAME_FIELDS) or sku).strip()[:300]
++        name = (name or sku).strip()[:300]
+         category = (pick(raw, CATEGORY_FIELDS) or "").strip()[:100]
+         existing = merged[key]
+         if existing["quantity"] and (existing["unit_cost"] != cost or existing["name"] != name):
+@@ -274,6 +357,13 @@
+               "pending": x.qty_ordered - x.qty_received,
+               "unit_cost": float(x.unit_cost) if x.unit_cost is not None else None} for x in batch.lines]
+     return {"id": batch.id, "party_name": batch.party_name, "challan_no": batch.challan_no,
++            "attachments": [{"id": a.id, "filename": a.original_filename,
++                             "content_type": a.content_type, "size_bytes": a.size_bytes,
++                             "url": f"/api/purchase-challans/{batch.id}/attachments/{a.id}"}
++                            for a in batch.attachments],
++            "received_unpriced_pieces": sum(x["qty_received"] for x in lines if x["unit_cost"] is None),
++            "received_value_known": float(sum((Decimal(str(x["unit_cost"])) * x["qty_received"] for x in lines if x["unit_cost"] is not None), Decimal("0"))),
++            "pending_value_known": float(sum((Decimal(str(x["unit_cost"])) * x["pending"] for x in lines if x["unit_cost"] is not None), Decimal("0"))),
+             "invoice_no": batch.invoice_no, "order_date": batch.order_date,
+             "status": batch.status, "created_at": batch.created_at,
+             "posted_at": batch.posted_at, "filename": batch.source_filename,
+@@ -299,10 +389,22 @@
+             else:
+                 pending_cost_known += Decimal(str(line["unit_cost"])) * line["pending"]
+     return {"items": result,
++            "received_pieces": sum(b["received"] for b in result),
++            "received_value_known": sum(b["received_value_known"] for b in result),
++            "received_unpriced_pieces": sum(b["received_unpriced_pieces"] for b in result),
+             "pending_pieces": sum(b["pending"] for b in result if b["status"] != "POSTED"),
+             "ordered_pieces": sum(b["ordered"] for b in result),
+             "pending_cost_known": float(pending_cost_known),
+             "pending_unpriced_pieces": pending_unpriced}
++
++
++@router.get("/purchase-challans/template")
++def download_challan_template():
++    rows = [["Product Name", "Size", "Qty"], ["URVISHA RED", "S", 20], ["URVISHA RED", "M", 25]]
++    return StreamingResponse(io.BytesIO(_simple_xlsx(rows)),
++        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++        headers={"Content-Disposition": 'attachment; filename="MYRAA_Challan_3_Column_Template.xlsx"'})
++
+ 
+ 
+ @router.get("/purchase-challans/{batch_id}")
+@@ -324,7 +426,7 @@
+     except ValueError:
+         raise HTTPException(422, "Date must be YYYY-MM-DD")
+     data = await file.read(MAX_EXCEL_SIZE + 1)
+-    rows = parse_challan_file(data, file.filename or "")
++    rows = parse_challan_file(data, file.filename or "", db=db)
+     filehash = hashlib.sha256(data + party.upper().encode() + number.upper().encode()).hexdigest()
+     if db.query(PurchaseChallan).filter_by(file_hash=filehash).first():
+         raise HTTPException(409, "This challan file was imported earlier")
+@@ -337,6 +439,138 @@
+         db.add(PurchaseChallanLine(challan_id=batch.id, sku=x["sku"], name=x["name"], size=x["size"], category=x["category"], qty_ordered=x["quantity"], qty_received=0, unit_cost=x["unit_cost"]))
+     db.commit()
+     return serialize_challan(db.query(PurchaseChallan).options(selectinload(PurchaseChallan.lines)).filter_by(id=batch.id).one())
++
++
++
++def _invoice_file_path(storage_filename: str) -> Path:
++    # Names are server-generated UUIDs. Reject unexpected path components anyway.
++    if Path(storage_filename).name != storage_filename:
++        raise HTTPException(500, "Unsafe stored invoice filename")
++    return CHALLAN_IMAGE_DIR / storage_filename
++
++
++@router.post("/purchase-challans/{batch_id}/attachments")
++async def upload_challan_attachments(batch_id: int, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
++    batch = db.query(PurchaseChallan).filter_by(id=batch_id).first()
++    if not batch:
++        raise HTTPException(404, "Challan not found")
++    if not files or len(files) + db.query(PurchaseChallanAttachment).filter_by(challan_id=batch_id).count() > MAX_CHALLAN_ATTACHMENTS:
++        raise HTTPException(422, f"Maximum {MAX_CHALLAN_ATTACHMENTS} images/documents per challan")
++    CHALLAN_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
++    stored = []
++    try:
++        for upload in files:
++            content = await upload.read(MAX_INVOICE_BYTES + 1)
++            if not content or len(content) > MAX_INVOICE_BYTES:
++                raise HTTPException(422, "Each invoice attachment must be 1 byte–10 MB")
++            kind = None
++            if content.startswith(b"%PDF-"):
++                kind = ("pdf", "application/pdf")
++            else:
++                try:
++                    with Image.open(io.BytesIO(content)) as im:
++                        im.verify()
++                        typ = im.format
++                    kind = {"JPEG": ("jpg", "image/jpeg"), "PNG": ("png", "image/png"),
++                            "WEBP": ("webp", "image/webp")}.get(typ)
++                except (UnidentifiedImageError, ValueError, OSError, Image.DecompressionBombError):
++                    pass
++            if not kind:
++                raise HTTPException(422, "Only valid JPG, PNG, WEBP or PDF challan scans are allowed")
++            storage = f"{uuid.uuid4().hex}.{kind[0]}"
++            target = _invoice_file_path(storage)
++            with open(target, "xb") as fh:
++                fh.write(content)
++            stored.append(target)
++            db.add(PurchaseChallanAttachment(
++                challan_id=batch_id, original_filename=Path((upload.filename or "invoice").replace("\\", "/")).name[:255],
++                storage_filename=storage, content_type=kind[1], size_bytes=len(content)))
++        db.commit()
++    except Exception:
++        db.rollback()
++        for target in stored:
++            target.unlink(missing_ok=True)
++        raise
++    return serialize_challan(db.query(PurchaseChallan).options(
++        selectinload(PurchaseChallan.lines), selectinload(PurchaseChallan.attachments)).filter_by(id=batch_id).one())
++
++
++@router.get("/purchase-challans/{batch_id}/attachments/{attachment_id}")
++def download_challan_attachment(batch_id: int, attachment_id: int, db: Session = Depends(get_db)):
++    record = db.query(PurchaseChallanAttachment).filter_by(id=attachment_id, challan_id=batch_id).first()
++    if not record:
++        raise HTTPException(404, "Challan attachment not found")
++    path = _invoice_file_path(record.storage_filename)
++    if not path.is_file():
++        raise HTTPException(404, "Saved scan unavailable: check persistent Railway file volume")
++    return FileResponse(path, media_type=record.content_type, filename=record.original_filename,
++                        content_disposition_type="inline" if record.content_type.startswith("image/") else "attachment")
++
++
++@router.delete("/purchase-challans/{batch_id}/attachments/{attachment_id}")
++def delete_challan_attachment(batch_id: int, attachment_id: int, db: Session = Depends(get_db)):
++    """Remove a mistaken pre-posting document; retain posted bill evidence."""
++    record = db.query(PurchaseChallanAttachment).filter_by(id=attachment_id, challan_id=batch_id).first()
++    if not record:
++        raise HTTPException(404, "Challan attachment not found")
++    if record.challan.status == "POSTED":
++        raise HTTPException(409, "Posted challan documents are retained for audit")
++    path = _invoice_file_path(record.storage_filename)
++    db.delete(record)
++    db.commit()
++    path.unlink(missing_ok=True)
++    return {"status": "deleted", "id": attachment_id}
++
++
++def _simple_xlsx(rows: list[list]):
++    """Small standards-compliant XLSX without requiring new Railway dependencies."""
++    def col(i):
++        result = ""
++        while i:
++            i, r = divmod(i - 1, 26)
++            result = chr(65 + r) + result
++        return result
++    cells = []
++    for n, values in enumerate(rows, 1):
++        contents = []
++        for j, val in enumerate(values, 1):
++            location = f"{col(j)}{n}"
++            if isinstance(val, (float, int)) and not isinstance(val, bool):
++                contents.append(f'<c r="{location}"><v>{val}</v></c>')
++            else:
++                txt = xml_escape(str(val if val is not None else ""), {'"':'&quot;'})
++                contents.append(f'<c r="{location}" t="inlineStr"><is><t>{txt}</t></is></c>')
++        cells.append(f'<row r="{n}">{"".join(contents)}</row>')
++    sheet = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
++             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
++             '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
++             '<sheetData>' + ''.join(cells) + '</sheetData></worksheet>')
++    output = io.BytesIO()
++    with ZipFile(output, 'w', ZIP_DEFLATED) as z:
++        z.writestr('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
++        z.writestr('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
++        z.writestr('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Challan Items" sheetId="1" r:id="rId1"/></sheets></workbook>')
++        z.writestr('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
++        z.writestr('xl/worksheets/sheet1.xml', sheet)
++    return output.getvalue()
++
++
++@router.get("/purchase-challans/{batch_id}/export")
++def export_challan(batch_id: int, db: Session = Depends(get_db)):
++    batch = db.query(PurchaseChallan).options(selectinload(PurchaseChallan.lines)).filter_by(id=batch_id).first()
++    if not batch:
++        raise HTTPException(404, "Challan not found")
++    rows = [["Product Name", "Size", "Qty Ordered", "Qty Received", "Qty Pending", "Unit Cost INR", "Received Value INR", "Pending Value INR", "Master SKU"]]
++    for line in batch.lines:
++        cost = float(line.unit_cost) if line.unit_cost is not None else None
++        rows.append([line.name, line.size, line.qty_ordered, line.qty_received,
++                     line.qty_ordered - line.qty_received, cost if cost is not None else "",
++                     round(cost * line.qty_received, 2) if cost is not None else "",
++                     round(cost * (line.qty_ordered - line.qty_received), 2) if cost is not None else "", line.sku])
++    filename = f"MYRAA_Challan_{batch.id}.xlsx"
++    return StreamingResponse(io.BytesIO(_simple_xlsx(rows)),
++        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+ 
+ 
+ class ReceiptLine(BaseModel):
+--- a/backend/business_models.py
++++ b/backend/business_models.py
+@@ -52,6 +52,7 @@
+     created_at = Column(DateTime(timezone=True), default=utcnow)
+     posted_at = Column(DateTime(timezone=True), nullable=True)
+     lines = relationship("PurchaseChallanLine", back_populates="challan", cascade="all, delete-orphan", order_by="PurchaseChallanLine.id")
++    attachments = relationship("PurchaseChallanAttachment", back_populates="challan", cascade="all, delete-orphan", order_by="PurchaseChallanAttachment.id")
+ 
+ 
+ class PurchaseChallanLine(Base):
+@@ -67,3 +68,31 @@
+     unit_cost = Column(Numeric(12, 2), nullable=True, default=None)
+     challan = relationship("PurchaseChallan", back_populates="lines")
+     __table_args__ = (UniqueConstraint("challan_id", "sku", "size", name="uq_challan_sku_size"),)
++
++
++class ProductMarketplaceAlias(Base):
++    """Whole-product external SKU: requires explicit/inferable Size to match an order.
++
++    Dedicated additive table avoids an ALTER on the existing size-scoped mappings.
++    """
++    __tablename__ = "myraa_product_marketplace_aliases"
++    id = Column(Integer, primary_key=True)
++    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
++    marketplace = Column(String(80), nullable=False, default="OTHER")
++    alias_code = Column(String(180), nullable=False)
++    normalized_code = Column(String(180), unique=True, nullable=False, index=True)
++    created_at = Column(DateTime(timezone=True), default=utcnow)
++    product = relationship("Product", back_populates="product_aliases")
++
++
++class PurchaseChallanAttachment(Base):
++    """Private scanned invoice/challan image, shared by all items in one bill."""
++    __tablename__ = "myraa_challan_attachments"
++    id = Column(Integer, primary_key=True)
++    challan_id = Column(Integer, ForeignKey("myraa_purchase_challans.id"), nullable=False, index=True)
++    original_filename = Column(String(255), nullable=False)
++    storage_filename = Column(String(120), unique=True, nullable=False)
++    content_type = Column(String(80), nullable=False)
++    size_bytes = Column(Integer, nullable=False)
++    created_at = Column(DateTime(timezone=True), default=utcnow)
++    challan = relationship("PurchaseChallan", back_populates="attachments")
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -24,7 +24,7 @@
+ import models
+ import business_models
+ import schemas
+-from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias
++from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias, add_product_alias
+ from services import (
+     inventory_service, alert_service, excel_service, reorder_service,
+     barcode_service, bulk_stock_service, bulk_product_service,
+@@ -359,6 +359,7 @@
+         "vendor": {"id": p.vendor.id, "name": p.vendor.name, "contact": p.vendor.contact} if p.vendor else None,
+         "variants": [_variant_out(v) for v in sorted(live_variants, key=lambda v: (bulk_stock_service.SIZE_ORDER.get(v.size, 99), v.size))],
+         "total_stock": sum(v.current_stock for v in live_variants),
++        "product_aliases": [{"id": a.id, "marketplace": a.marketplace, "sku": a.alias_code} for a in sorted(p.product_aliases, key=lambda x: x.id)],
+         "unit_cost": float(p.cost_record.unit_cost) if p.cost_record else None,
+         "stock_cost_value": float(sum((v.cost_record.unit_cost if v.cost_record else p.cost_record.unit_cost if p.cost_record else 0) * max(v.current_stock, 0) for v in live_variants if v.last_counted_at)),
+     }
+@@ -672,6 +673,12 @@
+             raise HTTPException(400, f"Duplicate size '{v.size}' in request.")
+         sizes_seen.add(v.size.strip().upper())
+ 
++    # Reject repeated external SKUs across product-wide / size-specific scopes
++    # before opening the create transaction, so there is no ambiguous mapping.
++    alias_codes = [a.sku.strip().upper() for a in payload.marketplace_aliases]
++    if len(alias_codes) != len(set(alias_codes)):
++        raise HTTPException(422, "Duplicate marketplace SKU in this product. Use one mapping per external SKU.")
++
+     product = models.Product(sku=sku, name=payload.name, category=payload.category, vendor_id=payload.vendor_id)
+     db.add(product)
+     db.flush()
+@@ -697,6 +704,9 @@
+         if input_variant.unit_cost is not None:
+             upsert_variant_cost(db, saved.id, input_variant.unit_cost)
+     for alias in payload.marketplace_aliases:
++        if not alias.size:
++            add_product_alias(db, product, alias.marketplace, alias.sku)
++            continue
+         saved = next((v for v in product.variants if v.size == alias.size.strip().upper()), None)
+         if not saved:
+             raise HTTPException(422, f"Alias size {alias.size} is not part of this product")
+--- a/backend/models.py
++++ b/backend/models.py
+@@ -78,6 +78,7 @@
+     variants = relationship("Variant", back_populates="product", cascade="all, delete-orphan")
+     reference_images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+     cost_record = relationship("ProductCost", back_populates="product", uselist=False, cascade="all, delete-orphan")
++    product_aliases = relationship("ProductMarketplaceAlias", back_populates="product", cascade="all, delete-orphan")
+ 
+ 
+ class ProductImage(Base):
+--- a/backend/schemas.py
++++ b/backend/schemas.py
+@@ -12,7 +12,7 @@
+ 
+ 
+ class MarketplaceAliasCreate(BaseModel):
+-    size: str
++    size: Optional[str] = None
+     marketplace: str = "OTHER"
+     sku: str
+ 
+@@ -64,6 +64,7 @@
+ 
+ 
+ class ProductOut(BaseModel):
++    product_aliases: List[dict] = Field(default_factory=list)
+     unit_cost: Optional[float] = None
+     stock_cost_value: float = 0
+     model_config = ConfigDict(from_attributes=True)
+--- a/backend/services/excel_service.py
++++ b/backend/services/excel_service.py
+@@ -35,7 +35,7 @@
+ from sqlalchemy.exc import IntegrityError
+ 
+ from models import Product, Variant, OrderUpload, OrderLine, OrderLineStatus, TransactionType
+-from business_models import MarketplaceSkuAlias
++from business_models import MarketplaceSkuAlias, ProductMarketplaceAlias
+ from services import reorder_service
+ from services.inventory_service import apply_stock_change, InsufficientStockError
+ from services.alert_service import check_variant_alert
+@@ -259,6 +259,9 @@
+     for mapped in db.query(MarketplaceSkuAlias).all():
+         for alias in _code_aliases(mapped.normalized_code):
+             exact.setdefault(alias, {})[mapped.variant_id] = next((v for v in variants if v.id == mapped.variant_id), None)
++    # Whole-product aliases only resolve when an order supplies an identifiable Size.
++    product_aliases = {a.normalized_code: a.product_id for a in db.query(ProductMarketplaceAlias).all()}
++    product_size = {(v.product_id, v.size.upper()): v for v in variants}
+     cross_brand_index = _build_cross_brand_variant_index(variants)
+ 
+     changed = 0
+@@ -275,6 +278,14 @@
+             v = candidates[0]
+         else:
+             v = pair.get((base, inferred_size)) if inferred_size else None
++            # Exact product-wide alias is higher priority than any fuzzy guess.
++            alias_product_id = next((product_aliases.get(x) for x in (raw, base) if x in product_aliases), None)
++            if not v and alias_product_id:
++                if not inferred_size:
++                    continue  # never guess a size from a product-wide SKU
++                v = product_size.get((alias_product_id, inferred_size))
++                if not v:
++                    continue  # unknown size: must remain unmapped
+             if not v:
+                 scored = []
+                 for candidate in variants:
+@@ -395,6 +406,14 @@
+                 for alias in _code_aliases(mapping.normalized_code):
+                     code_map[alias][variant.id] = variant
+ 
++    # Exact product-wide mappings. Only match if size was supplied/inferred;
++    # ambiguous no-size order rows must NEVER fall through to fuzzy matching.
++    product_alias_map: dict[str, int] = {}
++    for code_chunk in _chunks(sorted(set(expanded_codes) | set(all_product_skus))):
++        for mapping in db.query(ProductMarketplaceAlias).filter(ProductMarketplaceAlias.normalized_code.in_(code_chunk)).all():
++            for code in _code_aliases(mapping.normalized_code):
++                product_alias_map[code] = mapping.product_id
++
+     # The code-map query above is intentionally chunked by raw marketplace
+     # codes. Now query the expanded base Product SKU list as well.
+     for product_chunk in _chunks(all_product_skus):
+@@ -413,6 +432,7 @@
+         .all()
+     )
+     cross_brand_index = _build_cross_brand_variant_index(fuzzy_variants)
++    product_size_index = {(v.product_id, v.size.upper()): v for v in fuzzy_variants}
+ 
+     def resolve(cands, size):
+         ambiguous = False
+@@ -445,7 +465,16 @@
+                 if v:
+                     return v, False
+ 
+-        # 3) Fuzzy marketplace matching. Size is inferred from the trailing
++        # 3) Exact product-wide marketplace SKU + explicit/inferred Size.
++        for raw, base, effective_size in prepared:
++            pid = product_alias_map.get(raw.upper()) or product_alias_map.get(base.upper())
++            if pid is not None:
++                if not effective_size:
++                    return None, True  # Size missing: NEVER default to a random variant.
++                variant = product_size_index.get((pid, effective_size))
++                return (variant, False) if variant else (None, True)
++
++        # 4) Fuzzy marketplace matching. Size is inferred from the trailing
+         # token when possible, so M cannot tie with L/XL/XXL. This fixes
+         # common real-world variants such as MAROOM-M -> MAROON, M.
+         best = None
+--- a/frontend/app.js
++++ b/frontend/app.js
+@@ -821,9 +821,7 @@
+   row.innerHTML = `
+     <input class="input sz size-size" value="${esc(size)}" placeholder="Size">
+     <div><div class="lbl">Stock</div><input class="input num-in size-stock" type="number" value="" placeholder="0" min="0" inputmode="numeric"></div>
+-    <div><div class="lbl">Unit Cost ₹</div><input class="input num-in size-cost" type="number" step="0.01" min="0" placeholder="Default" inputmode="decimal"></div>
+-    <div><div class="lbl">Alert below</div><input class="input num-in size-threshold" type="number" value="5" min="0"></div>
+-    <div><div class="lbl">Target</div><input class="input num-in size-target" type="number" value="20" min="0"></div>
++    <details class="size-advanced-settings"><summary>Alert & target</summary><div class="size-advanced-inputs"><label><small>Alert below</small><input class="input num-in size-threshold" type="number" value="5" min="0"></label><label><small>Target stock</small><input class="input num-in size-target" type="number" value="20" min="0"></label></div></details>
+     <button type="button" class="row-remove" aria-label="Remove size"><i class="fa-solid fa-trash-can"></i></button>`;
+   row.querySelector(".row-remove").addEventListener("click", () => row.remove());
+   row.querySelectorAll("input").forEach((input) => input.addEventListener("keydown", (e) => {
+@@ -851,6 +849,7 @@
+ function resetAddForm() {
+   $("size-rows").innerHTML = "";
+   STANDARD_SIZES.forEach((s) => addSizeRow(s));
++  window.myraaResetProductAliases?.();
+   addPhotoFiles = [];
+   addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
+   addPhotoObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+@@ -882,7 +881,6 @@
+     initial_stock: Number(row.querySelector(".size-stock").value) || 0,
+     reorder_threshold: Number(row.querySelector(".size-threshold").value) || 5,
+     target_stock_level: Number(row.querySelector(".size-target").value) || 20,
+-    unit_cost: row.querySelector(".size-cost").value === "" ? null : Number(row.querySelector(".size-cost").value),
+   })).filter((v) => v.size);
+   if (!variants.length) { msg.textContent = "Add at least one size."; msg.className = "msg error"; return; }
+ 
+@@ -890,12 +888,7 @@
+   submitButton.dataset.originalText = submitButton.textContent;
+   submitButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving product…';
+   try {
+-    const aliasText = form.elements.namedItem("marketplace_aliases")?.value || "";
+-    const marketplace_aliases = aliasText.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map((line, index) => {
+-      const parts = line.split("|").map(s => s.trim());
+-      if (parts.length !== 3 || parts.some(x => !x)) throw new Error(`Marketplace alias line ${index + 1}: use SIZE | MARKETPLACE | SKU`);
+-      return { size: parts[0], marketplace: parts[1], sku: parts[2] };
+-    });
++    const marketplace_aliases = window.myraaCollectNewProductAliases?.() || [];
+     const data = await apiPost(`${API}/products`, {
+       unit_cost: form.elements.namedItem("unit_cost").value === "" ? null : Number(form.elements.namedItem("unit_cost").value),
+       marketplace_aliases,
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -12,7 +12,7 @@
+ <link rel="stylesheet" href="myraa-production.css?v=2">
+ <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
+   <link rel="stylesheet" href="packing-picklist.css?v=4">
+-  <link rel="stylesheet" href="business-workspace.css?v=1">
++  <link rel="stylesheet" href="business-workspace.css?v=2">
+ </head>
+ <body>
+ 
+@@ -222,8 +222,9 @@
+             <label class="field">Order Date<input class="input" name="order_date" type="date" required></label>
+           </div>
+           <label class="field">Upload Excel / CSV<input class="input" type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
+-          <p class="hint">Excel columns: SKU, Product Name, Size, Qty, Unit Cost, Category (optional). You can fill missing costs in the receipt table before pushing inventory.</p>
+-          <a class="link-btn" href="assets/purchase-challan-template.xlsx" download="MYRAA_Purchase_Challan_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download Excel template</a>
++          <p class="hint">Simple Excel: <strong>Product Name · Size · Qty</strong>. After import, enter how many pieces arrived and their purchase rate before pushing to stock.</p>
++          <label class="field challan-invoice-upload">Challan / invoice scan (optional)<input class="input" type="file" name="invoice_images" accept="image/jpeg,image/png,image/webp,application/pdf" multiple><small class="hint">Upload up to 12 photos/PDFs for this entire bill, including multiple products.</small></label>
++          <a class="link-btn" href="/api/purchase-challans/template" download="MYRAA_Challan_3_Column_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download 3-column Excel template</a>
+           <button type="submit" class="btn-primary"><i class="fa-solid fa-upload"></i> Import Pending Challan</button>
+           <p id="challan-import-message" class="msg" aria-live="polite"></p>
+         </form>
+@@ -393,8 +394,10 @@
+           <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
+           <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>
+           <label class="field">Default Unit Cost (₹)<input name="unit_cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 240.00" class="input"><small class="hint">Used for sizes without their own cost.</small></label>
+-          <label class="field">Marketplace SKU Mappings (optional)<textarea name="marketplace_aliases" class="input" rows="3" placeholder="S | Myntra | MYNTRA-STYLE-S
+-M | Ajio | AJIO-STYLE-M"></textarea><small class="hint">One per line: SIZE | MARKETPLACE | SKU. Each external SKU maps to one exact size.</small></label>
++          <div class="product-sku-builder" id="product-sku-builder" aria-label="Marketplace SKU aliases">
++            <div class="sku-builder-title"><div><strong>Marketplace SKUs</strong><small>All SKUs link to the Master SKU above.</small></div><button id="new-product-add-alias" class="btn-secondary" type="button"><i class="fa-solid fa-plus"></i> Add SKU</button></div>
++            <div id="new-product-alias-rows" class="sku-builder-rows"></div>
++          </div>
+         </div>
+       </div>
+ 
+@@ -503,9 +506,9 @@
+ <div id="toast" class="toast" hidden></div>
+ 
+ <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+-<script src="app.js?v=myraa-production-2"></script>
++<script src="app.js?v=myraa-product-v2"></script>
+ <script src="myraa-signature-v3.js?v=3"></script>
+ <script src="packing-picklist.js?v=4"></script>
+-<script src="business-workspace.js?v=1"></script>
++<script src="business-workspace.js?v=2"></script>
+ </body>
+ </html>
+--- a/frontend/business-workspace.js
++++ b/frontend/business-workspace.js
+@@ -1,89 +1,140 @@
+-/* MYRAA Business Workspace v1: costing, exact marketplace SKU mapping,
+-   supplier challan import/staging, and one-time inventory posting. */
++/* MYRAA Product & Challan v2: clean product editor, explicit SKU mapping,
++   product gallery upload, invoice scans and staged receipts. */
+ (() => {
+   'use strict';
+   const $ = id => document.getElementById(id);
+   const E = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+   const money = n => `₹${Number(n || 0).toLocaleString('en-IN', {minimumFractionDigits:2,maximumFractionDigits:2})}`;
+-  async function json(url, options = {}) {
++  async function json(url, options={}) {
+     const response = await fetch(url, options);
+     const body = await response.json().catch(() => ({}));
+     if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`);
+     return body;
+   }
+-  const send = (url, method, payload) => json(url, {method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+-  const $qs = (container, selector) => container.querySelector(selector);
+-  const notice = (el, message, error = false) => { el.textContent = message; el.className = error ? 'business-message is-error' : 'business-message'; };
++  const send = (url, method, payload) => json(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
++  const notice = (el, message, error=false) => {
++    if (!el) return;
++    el.textContent = message;
++    el.className = error ? 'business-message is-error' : 'business-message';
++  };
++
++  // Both scopes are explicit; whole-product SKU needs Size in the order sheet.
++  const aliasOptions = (includeWhole=true) => {
++    const sizes = [...new Set(Array.from(document.querySelectorAll('#size-rows .size-size'))
++      .map(el => el.value.trim().toUpperCase()).filter(Boolean))];
++    return `${includeWhole ? '<option value="">Whole product (Size required in orders)</option>' : ''}`
++      + sizes.map(size => `<option value="${E(size)}">Only size ${E(size)}</option>`).join('');
++  };
++  const aliasRows = $('new-product-alias-rows');
++  function addNewProductSku() {
++    const row=document.createElement('div');
++    row.className='sku-entry-row';
++    row.innerHTML = `<input class="input sku-entry-code" type="text" required maxlength="180" placeholder="Marketplace SKU" aria-label="Marketplace SKU">
++      <input class="input sku-entry-market" type="text" maxlength="80" placeholder="Marketplace (optional)" aria-label="Marketplace">
++      <select class="input sku-entry-size" aria-label="SKU scope">${aliasOptions()}</select>
++      <button class="sku-entry-remove" type="button" aria-label="Remove SKU row"><i class="fa-solid fa-xmark"></i></button>`;
++    row.querySelector('.sku-entry-remove').addEventListener('click',()=>row.remove());
++    aliasRows?.appendChild(row);
++    row.querySelector('.sku-entry-code')?.focus();
++  }
++  $('new-product-add-alias')?.addEventListener('click', addNewProductSku);
++  window.myraaResetProductAliases = () => aliasRows?.replaceChildren();
++  window.myraaCollectNewProductAliases = () => {
++    const sizes = new Set(Array.from(document.querySelectorAll('#size-rows .size-size'))
++      .map(el => el.value.trim().toUpperCase()).filter(Boolean));
++    const seen = new Set();
++    return Array.from(aliasRows?.querySelectorAll('.sku-entry-row') || []).map((row, i) => {
++      const sku = row.querySelector('.sku-entry-code').value.trim();
++      const size = row.querySelector('.sku-entry-size').value.trim();
++      const marketplace = row.querySelector('.sku-entry-market').value.trim() || 'OTHER';
++      if (!sku) throw new Error(`SKU mapping ${i+1}: enter marketplace SKU`);
++      if (size && !sizes.has(size.toUpperCase())) throw new Error(`SKU mapping ${i+1}: size ${size} is not in product sizes`);
++      if (seen.has(sku.toUpperCase())) throw new Error(`SKU mapping ${i+1}: duplicate marketplace SKU`);
++      seen.add(sku.toUpperCase());
++      return {sku, size: size || null, marketplace};
++    });
++  };
+ 
+   window.myraaEnhanceProductDetail = (product, container) => {
+     const seatGrid = container.querySelector('.seat-grid');
+     if (!seatGrid) return;
+     const block = document.createElement('section');
+-    block.className = 'business-product-card';
+-    const options = product.variants.map(v => `<option value="${E(v.size)}">${E(v.size)}</option>`).join('');
+-    const unitCost = product.unit_cost ?? '';
+-    const sizeRows = product.variants.map(v => `<label class="business-size-row"><span>${E(v.size)} · ${Number(v.current_stock).toLocaleString()} pcs</span><input type="number" step="0.01" min="0" class="input business-cost-size" data-size="${E(v.size)}" value="${v.cost_override ?? ''}" placeholder="Default"> <strong>${v.cost_value === null || v.cost_value === undefined ? 'Not priced' : money(v.cost_value)}</strong></label>`).join('');
+-    const aliases = product.variants.flatMap(v => (v.marketplace_aliases || []).map(a => ({...a, size:v.size})));
++    block.className = 'business-product-card business-product-v2';
++    const options = product.variants.map(v=>`<option value="${E(v.size)}">Only size ${E(v.size)}</option>`).join('');
++    const aliases = [
++      ...(product.product_aliases || []).map(a=>({...a, size:null, scope:'product'})),
++      ...product.variants.flatMap(v=>(v.marketplace_aliases || []).map(a=>({...a,size:v.size,scope:'size'})))
++    ];
++    const sizeRows=product.variants.map(v=>`<div class="business-size-summary"><b>${E(v.size)}</b><span>${Number(v.current_stock||0).toLocaleString('en-IN')} pcs</span><strong>${v.cost_value===null||v.cost_value===undefined?'Cost not set':money(v.cost_value)}</strong></div>`).join('');
+     block.innerHTML = `
+-      <header><h3><i class="fa-solid fa-receipt"></i> Product Costing & Marketplace SKUs</h3><p>Internal Master SKU: <strong>${E(product.sku)}</strong> · Known stock cost: <strong>${money(product.stock_cost_value)}</strong></p></header>
+-      <div class="business-product-grid"><div>
+-        <label class="field">Default cost per piece (₹)<input class="input business-default-cost" type="number" min="0" step="0.01" value="${E(unitCost)}" placeholder="Cost per unit"></label>
+-        <h4>Cost by size</h4><div class="business-size-costs">${sizeRows}</div>
+-        <button class="btn-primary business-save-cost" type="button"><i class="fa-solid fa-floppy-disk"></i> Save Costing</button>
+-      </div><div>
+-        <h4>Marketplace SKU aliases</h4><p class="hint">Each external SKU must match one exact size. Multiple marketplaces are supported.</p>
+-        <div class="business-aliases">${aliases.length ? aliases.map(a=>`<div class="business-alias"><span><b>${E(a.size)}</b> · ${E(a.marketplace)} · <code>${E(a.sku)}</code></span><button type="button" class="business-remove-alias" data-alias-id="${a.id}" title="Remove mapping"><i class="fa-solid fa-xmark"></i></button></div>`).join('') : '<p class="hint">No marketplace aliases yet.</p>'}</div>
+-        <form class="business-add-alias"><label>Size<select class="input" name="size" required>${options}</select></label><label>Marketplace<input class="input" name="marketplace" placeholder="Myntra / Ajio" required maxlength="80"></label><label>External SKU<input class="input" name="sku" placeholder="Marketplace SKU" required maxlength="180"></label><button type="submit" class="btn-secondary">+ Add Mapping</button></form>
+-      </div></div>
+-      <div class="business-gallery-extra"><label class="field">Add more product photos (after product creation)<input type="file" accept="image/jpeg,image/png,image/webp" multiple class="input business-extra-images"></label><button class="btn-secondary business-upload-images" type="button"><i class="fa-solid fa-images"></i> Upload Additional Photos</button><p class="hint">Existing front photo remains unchanged. Up to 8 images per upload; photos appear in product gallery.</p></div>
+-      <p class="business-message" aria-live="polite"></p>`;
++      <header class="business-v2-head"><div><h3><i class="fa-solid fa-box-open"></i> Master SKU &amp; Product Costing</h3>
++        <p>Master SKU <code>${E(product.sku)}</code> · Known stock cost <b>${money(product.stock_cost_value)}</b></p></div></header>
++      <div class="business-product-grid-v2">
++        <section class="business-cost-editor"><h4>Purchase Cost</h4>
++          <label class="field">Default unit cost (₹)<input class="input business-default-cost" type="number" min="0" step="0.01" value="${E(product.unit_cost??'')}" placeholder="e.g. 785"></label>
++          <button class="btn-primary business-save-cost" type="button"><i class="fa-solid fa-floppy-disk"></i> Save Cost</button>
++          <div class="business-size-report"><strong>Size-wise stock valuation</strong><small>Read-only; purchase rates remain in the stock ledger.</small>${sizeRows}</div>
++        </section>
++        <section class="business-sku-editor"><div class="business-alias-title"><h4>Linked marketplace SKUs</h4>
++          <button type="button" class="btn-primary business-alias-open"><i class="fa-solid fa-plus"></i> Add SKU</button></div>
++          <p class="hint">Whole-product SKU works when the marketplace order includes a size. Size-specific SKU matches directly.</p>
++          <div class="business-aliases">${aliases.length?aliases.map(a=>`<div class="business-alias"><span><code>${E(a.sku)}</code><small>${E(a.marketplace)} · ${a.size?'Size '+E(a.size):'Whole product'}</small></span><button type="button" class="business-remove-alias" data-alias-type="${a.scope}" data-alias-id="${a.id}" title="Remove mapping" aria-label="Remove ${E(a.sku)}"><i class="fa-solid fa-xmark"></i></button></div>`).join(''):'<p class="hint">No extra SKUs yet.</p>'}</div>
++          <form class="business-add-alias-v2" hidden><div class="business-add-alias-fields">
++            <label>Marketplace SKU<input class="input" name="sku" required maxlength="180" placeholder="e.g. TWINS_URVISHA_RED"></label>
++            <label>Marketplace (optional)<input class="input" name="marketplace" maxlength="80" placeholder="e.g. Twins"></label>
++            <label>Applies to<select class="input" name="size"><option value="">Whole product (Size required)</option>${options}</select></label>
++          </div><div class="business-inline-actions"><button class="btn-primary" type="submit">Save SKU</button><button type="button" class="btn-secondary business-alias-cancel">Cancel</button></div></form>
++        </section>
++      </div>
++      <p class="business-message" role="status" aria-live="polite"></p>`;
+     seatGrid.after(block);
+     const feedback = block.querySelector('.business-message');
+     const endpoint = `/api/products/${encodeURIComponent(product.sku)}`;
+     const refresh = async () => {
+       const data = await json(endpoint);
+-      if (typeof window.renderDetail === 'function') window.renderDetail(data, container, { showDelete: Boolean(container.querySelector('#detail-delete')) });
+-      else if (typeof window.openProductDetail === 'function') window.openProductDetail(product.sku);
++      if (typeof window.renderDetail === 'function') window.renderDetail(data,container,{showDelete:Boolean(container.querySelector('#detail-delete'))});
++      else if (typeof window.openProductDetail === 'function') window.openProductDetail(data.sku);
+     };
+-    block.querySelector('.business-save-cost').addEventListener('click', async () => {
+-      const b = block.querySelector('.business-save-cost'); b.disabled = true;
+-      try {
+-        const value = block.querySelector('.business-default-cost').value;
+-        const size_costs = {};
+-        block.querySelectorAll('.business-cost-size').forEach(input => { if (input.value !== '') size_costs[input.dataset.size] = Number(input.value); });
+-        await send(`${endpoint}/costing`, 'PUT', {unit_cost: value === '' ? null : Number(value), size_costs});
+-        await refresh();
+-      } catch (e) { notice(feedback, e.message, true); }
+-      finally { b.disabled = false; }
+-    });
+-    block.querySelector('.business-add-alias').addEventListener('submit', async event => {
+-      event.preventDefault();
+-      const b = event.target.querySelector('button'); b.disabled = true;
+-      try {
+-        await send(`${endpoint}/marketplace-aliases`, 'POST', Object.fromEntries(new FormData(event.target)));
+-        await refresh();
+-      } catch (e) { notice(feedback, e.message, true); }
+-      finally { b.disabled = false; }
+-    });
+-    block.querySelectorAll('.business-remove-alias').forEach(button => button.addEventListener('click', async () => {
+-      if (!window.confirm('Remove this marketplace SKU mapping? Existing order history is not deleted.')) return;
+-      try {
+-        await json(`${endpoint}/marketplace-aliases/${button.dataset.aliasId}`, {method:'DELETE'});
+-        await refresh();
+-      } catch (e) { notice(feedback,e.message,true); }
++    block.querySelector('.business-save-cost').addEventListener('click',async()=>{
++      const button=block.querySelector('.business-save-cost'), input=block.querySelector('.business-default-cost');
++      if (input.value==='' || !Number.isFinite(Number(input.value)) || Number(input.value)<0){notice(feedback,'Enter a valid non-negative unit cost.',true);return;}
++      button.disabled=true;
++      try {await send(`${endpoint}/costing`,'PUT',{unit_cost:input.value===''?null:Number(input.value),size_costs:{}});await refresh();}
++      catch(err){notice(feedback,err.message,true);} finally {button.disabled=false;}
++    });
++    const form=block.querySelector('.business-add-alias-v2');
++    block.querySelector('.business-alias-open').addEventListener('click',()=>{form.hidden=false;form.querySelector('input[name=sku]').focus();});
++    block.querySelector('.business-alias-cancel').addEventListener('click',()=>{form.hidden=true;form.reset();});
++    form.addEventListener('submit',async e=>{
++      e.preventDefault();const button=form.querySelector('button[type=submit]');button.disabled=true;
++      try{await send(`${endpoint}/marketplace-aliases`,'POST',Object.fromEntries(new FormData(form)));await refresh();}
++      catch(err){notice(feedback,err.message,true);}finally{button.disabled=false;}
++    });
++    block.querySelectorAll('.business-remove-alias').forEach(button=>button.addEventListener('click',async()=>{
++      if(!window.confirm('Remove this marketplace SKU link? Past orders will stay unchanged.'))return;
++      const prefix=button.dataset.aliasType==='product'?'product-marketplace-aliases':'marketplace-aliases';
++      try{await json(`${endpoint}/${prefix}/${button.dataset.aliasId}`,{method:'DELETE'});await refresh();}
++      catch(err){notice(feedback,err.message,true);}
+     }));
+-    block.querySelector('.business-upload-images').addEventListener('click', async () => {
+-      const files = block.querySelector('.business-extra-images').files;
+-      if (!files?.length) { notice(feedback, 'Choose one or more photos.', true); return; }
+-      if (files.length > 8) { notice(feedback, 'Maximum 8 images in one upload.', true); return; }
+-      const b = block.querySelector('.business-upload-images'); b.disabled = true;
+-      try {
+-        const payload = new FormData(); Array.from(files).forEach(f=>payload.append('files',f));
+-        await json(`${endpoint}/images`, {method:'POST',body:payload});
+-        await refresh();
+-      } catch(e) { notice(feedback,e.message,true); }
+-      finally { b.disabled = false; }
+-    });
++    // The requested compact Add Photos control belongs inside the photo gallery,
++    // directly below the thumbnails. Never at the bottom of the Details page.
++    const gallery=container.querySelector('.detail-photo-gallery');
++    if(gallery){
++      const photoBar=document.createElement('label');
++      photoBar.className='business-gallery-quick-add';
++      photoBar.innerHTML='<i class="fa-solid fa-plus"></i> Add photos <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden><small class="business-gallery-status" aria-live="polite"></small>';
++      gallery.append(photoBar);
++      photoBar.querySelector('input').addEventListener('change',async(event)=>{
++        const files=Array.from(event.target.files||[]);if(!files.length)return;
++        const status=photoBar.querySelector('small');
++        if(files.length>8){status.textContent='Maximum 8 photos per upload';return;}
++        status.textContent='Uploading…';
++        const body=new FormData();files.forEach(file=>body.append('files',file));
++        try{await json(`${endpoint}/images`,{method:'POST',body});await refresh();}
++        catch(err){status.textContent=err.message;}
++        finally{event.target.value='';}
++      });
++    }
+   };
+ 
+   // Stock valuation chart (known cost only). Missing-cost pieces are clearly flagged.
+@@ -143,60 +194,105 @@
+     refreshCosts();
+   }
+ 
+-  // Inbound purchase challan workflow: staged receipt != stock entry.
++  // Supplier challans: invoice image(s) belong to the entire bill, not a line.
+   const challanView = $('view-challans');
+   if (!challanView) return;
+-  let selectedId = null, selected = null;
++  let selectedId=null, selected=null;
++  async function uploadScans(batchId, files) {
++    if (!files?.length) return;
++    if (files.length>12) throw new Error('Maximum 12 invoice scans per challan');
++    const fd=new FormData();Array.from(files).forEach(f=>fd.append('files',f));
++    return json(`/api/purchase-challans/${batchId}/attachments`,{method:'POST',body:fd});
++  }
+   async function loadChallans() {
+-    const listing = $('challan-batches'), summary = $('challan-summary');
++    const listing=$('challan-batches'),summary=$('challan-summary');
+     try {
+-      const data = await json('/api/purchase-challans');
+-      summary.innerHTML = `<div><small>Supplier orders</small><strong>${data.items.length}</strong></div><div><small>Total pieces ordered</small><strong>${data.ordered_pieces.toLocaleString()}</strong></div><div><small>Pending to receive</small><strong>${data.pending_pieces.toLocaleString()}</strong></div><div><small>Known pending value</small><strong>${money(data.pending_cost_known)}</strong>${data.pending_unpriced_pieces ? `<small>${data.pending_unpriced_pieces} pieces still need costing</small>` : ''}</div>`;
+-      listing.innerHTML = data.items.map(b => `<button class="challan-batch ${b.id===selectedId?'is-selected':''}" type="button" data-id="${b.id}"><span><b>${E(b.party_name)} · ${E(b.challan_no)}</b><small>${E(b.order_date)} · ${E(b.status)} · ${E(b.filename)}</small></span><strong>${b.pending} pending / ${b.ordered}</strong></button>`).join('') || '<p class="hint">Import an Excel to begin tracking supplier orders.</p>';
+-      listing.querySelectorAll('button[data-id]').forEach(button => button.addEventListener('click', () => openChallan(Number(button.dataset.id))));
+-      if (selectedId) await openChallan(selectedId);
+-    } catch (e) { listing.innerHTML = `<p class="business-message is-error">${E(e.message)}</p>`; }
+-  }
+-  window.myraaLoadChallans = loadChallans;
+-  async function openChallan(id) {
+-    try { selected = await json(`/api/purchase-challans/${id}`); selectedId = id; renderChallan(); }
+-    catch (e) { alert(`Cannot load challan: ${e.message}`); }
+-  }
+-  function renderChallan() {
+-    const host = $('challan-detail'), panel = $('challan-detail-panel'); panel.hidden = false;
+-    host.innerHTML = `<div class="challan-detail-head"><div><h2>${E(selected.party_name)} · ${E(selected.challan_no)}</h2><p class="hint">Invoice ${E(selected.invoice_no||'—')} · ${E(selected.order_date)} · Status: ${E(selected.status)}</p></div><div><strong>${selected.received}/${selected.ordered} received</strong><small>${selected.pending} pending pieces</small></div></div><div class="table-wrap"><table class="grid challan-lines"><thead><tr><th>Master SKU</th><th>Product</th><th>Size</th><th>Ordered</th><th>Received (to stage)</th><th>Pending</th><th>Unit Cost ₹</th></tr></thead><tbody>${selected.lines.map(x=>`<tr><td><code>${E(x.sku)}</code></td><td>${E(x.name)}</td><td><b>${E(x.size)}</b></td><td>${x.qty_ordered}</td><td><input class="input" type="number" min="0" max="${x.qty_ordered}" step="1" data-received="${x.id}" value="${x.qty_received}" ${selected.status==='POSTED'?'disabled':''}></td><td>${x.pending}</td><td><input class="input" type="number" min="0" step="0.01" data-cost="${x.id}" value="${x.unit_cost ?? ''}" placeholder="Not set" ${selected.status==='POSTED'?'disabled':''}></td></tr>`).join('')}</tbody></table></div><div class="challan-actions"><button id="challan-save-receipt" class="btn-secondary" type="button" ${selected.status==='POSTED'?'disabled':''}>Save Received Quantities</button><button id="challan-receive-all" class="btn-secondary" type="button" ${selected.status==='POSTED'?'disabled':''}>Mark All Received</button><button id="challan-push" class="btn-primary" type="button" ${selected.status!=='READY'?'disabled':''}>Push Entire Challan to Inventory</button><p class="hint">Inventory updates only when every size is fully received, every unit cost is set, and you explicitly push. Repeat push is blocked.</p></div><p id="challan-detail-msg" class="business-message" aria-live="polite"></p>`;
+-    host.querySelector('#challan-receive-all')?.addEventListener('click', () => host.querySelectorAll('[data-received]').forEach(input => {input.value = input.max;}));
+-    const receiptPayload = () => selected.lines.map(line => {
+-      const r = host.querySelector(`[data-received="${line.id}"]`);
+-      const c = host.querySelector(`[data-cost="${line.id}"]`);
+-      const value = Number(r.value);
+-      if (!Number.isInteger(value) || value < 0 || value > line.qty_ordered) throw new Error(`${line.sku}/${line.size}: received must be between 0 and ${line.qty_ordered}`);
+-      if (c.value && (!Number.isFinite(Number(c.value)) || Number(c.value)<0)) throw new Error('Invalid unit cost');
+-      return {line_id:line.id, received:value, unit_cost:c.value===''?null:Number(c.value)};
+-    });
+-    host.querySelector('#challan-save-receipt')?.addEventListener('click', async () => {
+-      const msg = $('challan-detail-msg');
+-      try { selected = await send(`/api/purchase-challans/${selected.id}/receipt`,'PATCH',{lines:receiptPayload()}); renderChallan(); await loadChallans(); }
+-      catch(e) { notice(msg,e.message,true); }
+-    });
+-    host.querySelector('#challan-push')?.addEventListener('click', async () => {
+-      if (!window.confirm(`Push ${selected.ordered} received pieces from ${selected.party_name} / ${selected.challan_no} into main stock? This cannot be pushed twice.`)) return;
+-      const button = $('challan-push'); button.disabled=true;
+-      try { const result = await send(`/api/purchase-challans/${selected.id}/push`,'POST',{}); await loadChallans(); window.myraaLoadCosting?.(); alert(`Inventory updated: ${result.received_pieces} pieces.`); }
+-      catch(e){ notice($('challan-detail-msg'),e.message,true); button.disabled=false; }
+-    });
+-  }
+-  $('challan-import-form')?.addEventListener('submit', async event => {
++      const data=await json('/api/purchase-challans');
++      summary.innerHTML=`<div><small>Total ordered</small><strong>${Number(data.ordered_pieces).toLocaleString('en-IN')} pcs</strong></div>
++        <div><small>Received</small><strong>${Number(data.received_pieces||0).toLocaleString('en-IN')} pcs</strong></div>
++        <div><small>Pending</small><strong>${Number(data.pending_pieces).toLocaleString('en-IN')} pcs</strong></div>
++        <div><small>Known received goods value</small><strong>${money(data.received_value_known)}</strong>${data.received_unpriced_pieces?`<small>${data.received_unpriced_pieces} received pcs need cost</small>`:''}</div>`;
++      listing.innerHTML=data.items.map(b=>`<button type="button" class="challan-batch ${b.id===selectedId?'is-selected':''}" data-id="${b.id}"><span><b>${E(b.party_name)} · ${E(b.challan_no)}</b><small>${E(b.order_date)} · ${E(b.status)} · ${E(b.filename)}</small></span><strong>${b.pending} pending / ${b.ordered}</strong></button>`).join('')||'<p class="hint">No challans yet. Import the 3-column Excel to begin.</p>';
++      listing.querySelectorAll('button[data-id]').forEach(button=>button.addEventListener('click',()=>openChallan(Number(button.dataset.id))));
++      if(selectedId) await openChallan(selectedId);
++    }catch(err){listing.innerHTML=`<p class="business-message is-error">${E(err.message)}</p>`;}
++  }
++  window.myraaLoadChallans=loadChallans;
++  async function openChallan(id){
++    try{selected=await json(`/api/purchase-challans/${id}`);selectedId=id;renderChallan();}
++    catch(err){window.alert(`Could not load challan: ${err.message}`);}
++  }
++  function renderChallan(){
++    const host=$('challan-detail'),panel=$('challan-detail-panel');
++    panel.hidden=false;
++    const attachments=(selected.attachments||[]).map(a=>`<div class="challan-scan-card"><a class="challan-scan" target="_blank" rel="noopener" href="${E(a.url)}" title="Open ${E(a.filename)}">
++      ${a.content_type.startsWith('image/')?`<img src="${E(a.url)}" loading="lazy" alt="${E(a.filename)}">`:'<i class="fa-solid fa-file-pdf"></i>'}
++      <span>${E(a.filename)}</span></a>${selected.status==='POSTED'?'':`<button class="challan-scan-remove" type="button" data-delete-attachment="${a.id}" aria-label="Remove invoice scan ${E(a.filename)}" title="Remove incorrect scan">×</button>`}</div>`).join('');
++    host.innerHTML=`
++      <header class="challan-detail-head"><div><h2>${E(selected.party_name)} · ${E(selected.challan_no)}</h2>
++        <p class="hint">${E(selected.order_date)} · Invoice ${E(selected.invoice_no||'—')} · ${E(selected.status)}</p></div>
++        <div><strong>${selected.received}/${selected.ordered} arrived</strong><small>${selected.pending} pending · Received goods ${money(selected.received_value_known)}</small>
++          <a class="btn-secondary" href="/api/purchase-challans/${selected.id}/export" download="MYRAA_Challan_${selected.id}.xlsx"><i class="fa-solid fa-file-excel"></i> Download Excel</a></div></header>
++      <div class="table-wrap"><table class="grid challan-lines"><thead><tr><th>Product Name / Master SKU</th><th>Size</th><th>Qty Ordered</th><th>PCS Arrived</th><th>Pending</th><th>Unit cost ₹</th><th>Arrived value</th></tr></thead>
++        <tbody>${selected.lines.map(line=>`<tr><td><strong>${E(line.name)}</strong><small>${E(line.sku)}</small></td><td><b>${E(line.size)}</b></td><td>${line.qty_ordered}</td>
++          <td><input class="input" type="number" min="0" max="${line.qty_ordered}" step="1" data-received="${line.id}" value="${line.qty_received}" ${selected.status==='POSTED'?'disabled':''}></td>
++          <td>${line.pending}</td><td><input class="input" type="number" min="0" step="0.01" data-cost="${line.id}" value="${line.unit_cost??''}" placeholder="Rate" ${selected.status==='POSTED'?'disabled':''}></td>
++          <td>${line.unit_cost===null?'—':money(line.unit_cost*line.qty_received)}</td></tr>`).join('')}</tbody></table></div>
++      <div class="challan-actions"><button id="challan-save-receipt" class="btn-secondary" type="button" ${selected.status==='POSTED'?'disabled':''}><i class="fa-solid fa-floppy-disk"></i> Save Received</button>
++        <button id="challan-receive-all" type="button" class="btn-secondary" ${selected.status==='POSTED'?'disabled':''}>Mark all arrived</button>
++        <button id="challan-push" class="btn-primary" type="button" ${selected.status!=='READY'?'disabled':''}><i class="fa-solid fa-boxes-stacked"></i> Push to Inventory</button>
++        <p class="hint">Stock changes only after all pieces arrived, costs were saved, and Push was confirmed. No duplicate push.</p></div>
++      <section class="challan-attachments"><div class="challan-attachments-title"><h3><i class="fa-solid fa-paperclip"></i> Challan / Invoice Images</h3><small>One bill may contain multiple products · up to 12 scans</small></div>
++        <div class="challan-scans">${attachments||'<p class="hint">No documents uploaded for this bill yet.</p>'}</div>
++        <label class="challan-scan-picker"><i class="fa-solid fa-plus"></i> Add challan image/PDF<input id="challan-extra-images" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple hidden></label></section>
++      <p id="challan-detail-msg" class="business-message" role="status" aria-live="polite"></p>`;
++    host.querySelector('#challan-receive-all')?.addEventListener('click',()=>host.querySelectorAll('[data-received]').forEach(input=>{input.value=input.max;}));
++    const receiptPayload=()=>selected.lines.map(line=>{
++      const r=host.querySelector(`[data-received="${line.id}"]`),c=host.querySelector(`[data-cost="${line.id}"]`);
++      const n=Number(r.value);
++      if(!Number.isInteger(n)||n<0||n>line.qty_ordered)throw new Error(`${line.name}/${line.size}: arrived quantity must be 0 to ${line.qty_ordered}`);
++      if(c.value!==''&&(!Number.isFinite(Number(c.value))||Number(c.value)<0))throw new Error('Enter a valid unit cost');
++      return {line_id:line.id,received:n,unit_cost:c.value===''?null:Number(c.value)};
++    });
++    host.querySelector('#challan-save-receipt')?.addEventListener('click',async()=>{
++      try{selected=await send(`/api/purchase-challans/${selected.id}/receipt`,'PATCH',{lines:receiptPayload()});renderChallan();await loadChallans();}
++      catch(err){notice($('challan-detail-msg'),err.message,true);}
++    });
++    host.querySelector('#challan-push')?.addEventListener('click',async()=>{
++      if(!window.confirm(`Push ${selected.ordered} pieces from ${selected.party_name} · ${selected.challan_no} into inventory? This action cannot be repeated.`))return;
++      const btn=$('challan-push');btn.disabled=true;
++      try{const response=await send(`/api/purchase-challans/${selected.id}/push`,'POST',{});await loadChallans();window.myraaLoadCosting?.();window.alert(`${response.received_pieces} pieces posted to inventory.`);}
++      catch(err){notice($('challan-detail-msg'),err.message,true);btn.disabled=false;}
++    });
++    host.querySelectorAll('[data-delete-attachment]').forEach(button=>button.addEventListener('click',async()=>{
++      if(!window.confirm('Remove this invoice scan? It will no longer be available.'))return;
++      try {await json(`/api/purchase-challans/${selected.id}/attachments/${button.dataset.deleteAttachment}`,{method:'DELETE'});
++        selected=await json(`/api/purchase-challans/${selected.id}`);renderChallan();}
++      catch(err){notice($('challan-detail-msg'),err.message,true);}
++    }));
++    host.querySelector('#challan-extra-images')?.addEventListener('change',async event=>{
++      const files=Array.from(event.target.files||[]);if(!files.length)return;
++      try{selected=await uploadScans(selected.id,files);renderChallan();}
++      catch(err){notice($('challan-detail-msg'),err.message,true);}
++    });
++  }
++  $('challan-import-form')?.addEventListener('submit',async event=>{
+     event.preventDefault();
+-    const form=event.target, button=form.querySelector('button[type=submit]'); button.disabled = true;
+-    const message = $('challan-import-message');
+-    try {
+-      const data=await json('/api/purchase-challans/import',{method:'POST',body:new FormData(form)});
+-      form.reset(); selectedId = data.id; notice(message,'Challan imported. Confirm received quantities before inventory push.');
++    const form=event.target,button=form.querySelector('button[type=submit]'),message=$('challan-import-message');
++    button.disabled=true;
++    try{
++      const uploads=Array.from(form.querySelector('[name=invoice_images]')?.files||[]);
++      if(uploads.length>12)throw new Error('Choose at most 12 scans per challan');
++      const fd=new FormData(form);fd.delete('invoice_images');
++      const batch=await json('/api/purchase-challans/import',{method:'POST',body:fd});
++      selectedId=batch.id;
++      let warning='';
++      if(uploads.length){try{await uploadScans(batch.id,uploads);}catch(err){warning=` Bill imported, but scans were not saved: ${err.message}. Retry inside bill details.`;}}
++      form.reset();notice(message,warning||'Challan imported. Save received pieces and unit costs before posting.',!!warning);
+       await loadChallans();
+-    } catch(e){ notice(message,e.message,true); }
+-    finally { button.disabled=false; }
++    }catch(err){notice(message,err.message,true);}finally{button.disabled=false;}
+   });
+-  const dateInput = $('challan-import-form')?.querySelector('[name=order_date]');
+-  if (dateInput && !dateInput.value) dateInput.value = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
++  const dateInput=$('challan-import-form')?.querySelector('[name=order_date]');
++  if(dateInput&&!dateInput.value)dateInput.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
++  if (challanView.classList.contains('is-active')) loadChallans();
+ })();
+--- a/frontend/business-workspace.css
++++ b/frontend/business-workspace.css
+@@ -75,3 +75,115 @@
+ .business-design-pagination button:disabled{opacity:.42;cursor:not-allowed}
+ .business-cost-warning-text{color:#b26b20}
+ @media(max-width:760px){.challan-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.business-cost-designs-head{align-items:stretch}.business-design-search-label{width:100%}}
++
++/* MYRAA Business v2 — clean master SKU / purchase UI; light and dark balanced */
++.add-product-card{width:min(1080px,calc(100vw - 28px))!important;max-width:1080px!important}
++.add-product-card .product-main-fields{grid-template-columns:minmax(190px,230px) minmax(0,1fr)!important;gap:24px}
++.add-product-card .product-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;align-content:start}
++.add-product-card .product-fields>.field{grid-column:auto!important}
++.add-product-card .product-photo-angles,.add-product-card .product-photo-hint,.add-product-card .product-sku-builder{grid-column:1/-1}
++.add-product-card .product-photo-angles{margin-bottom:4px}
++.add-product-card .product-sku-builder{margin-top:10px}
++.product-sku-builder{border:1px solid var(--line,#dce6df);border-radius:14px;padding:13px;background:var(--paper,#fff)}
++.sku-builder-title{display:flex;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap;margin-bottom:8px}
++.sku-builder-title strong{font-size:14px;color:var(--ink,#102b25)}
++.sku-builder-title small{display:block;color:var(--ink-soft,#68847b);font-size:11px;margin-top:3px}
++.sku-builder-title button{min-height:36px;white-space:nowrap}
++.sku-builder-rows{display:grid;gap:9px;max-height:185px;overflow-y:auto}
++.sku-entry-row{display:grid;grid-template-columns:1.1fr .8fr 1.2fr 34px;gap:8px;align-items:center;min-width:0}
++.sku-entry-row>.input{min-width:0;width:100%;height:38px}
++.sku-entry-remove{height:34px;width:34px;border:1px solid var(--line,#dbe7df);background:transparent;color:var(--ink,#153a31);border-radius:9px;cursor:pointer}
++.add-product-card #size-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;max-height:280px;overflow:auto;scroll-padding-bottom:9px;padding:3px}
++.add-product-card .size-row{display:grid;grid-template-columns:72px 100px minmax(0,1fr) 32px;gap:8px;align-items:center;min-width:0;padding:10px 9px;background:var(--paper,#fff);border:1px solid var(--line,#dce6df);border-radius:12px}
++.add-product-card .size-row .sz{width:100%!important;min-width:0;flex:auto;font-weight:750}
++.add-product-card .size-row .num-in{width:100%!important;min-width:0;flex:auto}
++.add-product-card .size-row .lbl{width:auto;font-size:10px;margin-bottom:4px;text-align:left}
++.size-advanced-settings{min-width:0;font-size:11px;color:var(--ink-soft,#51695f)}
++.size-advanced-settings summary{cursor:pointer;white-space:nowrap}
++.size-advanced-inputs{position:relative;display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
++.size-advanced-inputs label{display:grid;gap:3px;min-width:80px}
++.size-advanced-inputs .num-in{width:78px!important}
++.add-product-card .size-row .row-remove{width:32px;min-width:32px}
++.add-product-card #add-size-row{margin-top:8px}
++.add-product-card .modal-head h2{font-size:22px}
++.add-product-card .photo-pick-box{border-radius:14px}
++
++/* Compact product details: cost once, inline aliases, photo upload under thumbnails */
++.business-product-v2{max-width:1200px;margin:18px 0 26px;padding:20px}
++.business-v2-head{border-bottom:1px solid var(--line,#dce6df);padding-bottom:11px;margin-bottom:16px}
++.business-v2-head h3{font-size:19px}
++.business-v2-head p{font-size:12px;overflow-wrap:anywhere}
++.business-product-grid-v2{display:grid;grid-template-columns:minmax(245px,.7fr) minmax(320px,1.3fr);gap:18px}
++.business-cost-editor,.business-sku-editor{min-width:0;padding:16px;border:1px solid var(--line,#dce6df);border-radius:13px;background:var(--paper,#fff)}
++.business-cost-editor h4,.business-sku-editor h4{font-size:15px;color:var(--ink,#163a30);margin:0 0 12px}
++.business-cost-editor .field{margin-bottom:10px}
++.business-save-cost{min-height:38px}
++.business-size-report{border-top:1px solid var(--line,#dce6df);padding-top:11px;margin-top:17px;display:grid;gap:6px}
++.business-size-report>strong{font-size:12px}
++.business-size-report>small{font-size:10px;color:var(--ink-soft,#668478)}
++.business-size-summary{display:grid;grid-template-columns:42px 1fr 1fr;gap:7px;align-items:center;font-size:12px;padding:7px 4px;border-bottom:1px solid var(--line,#e4ece7)}
++.business-size-summary strong{text-align:right;font-size:12px;white-space:nowrap}
++.business-alias-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
++.business-alias-title h4{margin:0}
++.business-aliases{max-height:255px;margin:10px 0;overflow-y:auto}
++.business-alias{padding:9px 12px;gap:12px}
++.business-alias span{display:grid;gap:3px;min-width:0}
++.business-alias small{font-size:10px;color:var(--ink-soft,#65786d)}
++.business-alias code{font-size:12px;font-weight:700}
++.business-add-alias-v2:not([hidden]){display:grid;gap:12px;background:var(--panel,#fff);border:1px solid var(--line,#dce6df);padding:13px;border-radius:12px;margin-top:12px}
++.business-add-alias-fields{display:grid;grid-template-columns:1fr .8fr 1.15fr;gap:9px}
++.business-add-alias-fields label{display:grid;gap:5px;font-size:11px;min-width:0}
++.business-add-alias-fields .input{min-width:0;width:100%}
++.business-inline-actions{display:flex;gap:9px;justify-content:flex-end}
++.business-gallery-quick-add{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;margin-top:8px;padding:9px 10px;border-radius:9px;border:1px dashed var(--primary,#0c8060);font-size:12px;font-weight:750;color:var(--primary,#087352);background:var(--paper,#fff);cursor:pointer}
++.business-gallery-status{font-size:10px;max-width:100%;font-weight:500;color:var(--ink-soft,#6c8077)}
++
++/* Challan: simple 3-column import, clear receipt/cost summary and bill-wide scans */
++.challan-form .challan-invoice-upload{margin:12px 0}
++.challan-summary{grid-template-columns:repeat(4,minmax(0,1fr))}
++.challan-summary strong{font-size:clamp(17px,2vw,26px)}
++.challan-detail-head>div:last-child{display:grid;gap:6px;justify-items:end}
++.challan-detail-head .btn-secondary{font-size:12px;text-decoration:none}
++.challan-lines td:first-child{min-width:180px}
++.challan-lines td:first-child strong,.challan-lines td:first-child small{display:block}
++.challan-lines td:first-child small{color:var(--ink-soft,#77877f);margin-top:3px}
++.challan-lines .input{width:95px;max-width:100%;text-align:center}
++.challan-attachments{margin-top:18px;padding-top:16px;border-top:1px solid var(--line,#dce6df)}
++.challan-attachments-title{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px}
++.challan-attachments-title h3{font-size:17px;margin:0}
++.challan-attachments-title small{font-size:11px;color:var(--ink-soft,#65786d)}
++.challan-scans{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
++.challan-scan{display:flex;flex-direction:column;align-items:center;gap:5px;width:110px;min-height:108px;padding:7px;background:var(--paper,#fff);border:1px solid var(--line,#dce6df);border-radius:12px;color:var(--ink,#173d31);text-decoration:none}
++.challan-scan img{width:95px;height:75px;border-radius:7px;object-fit:contain}
++.challan-scan>i{font-size:42px;padding:12px 0;color:#b84d4d}
++.challan-scan span{font-size:10px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.challan-scan-picker{display:inline-flex;align-items:center;gap:7px;padding:10px 14px;border:1px dashed var(--primary,#0a8666);color:var(--primary,#087258);border-radius:10px;font-size:12px;font-weight:750;cursor:pointer}
++:root[data-theme="dark"] .business-cost-editor,:root[data-theme="dark"] .business-sku-editor,:root[data-theme="dark"] .sku-entry-row,:root[data-theme="dark"] .product-sku-builder,:root[data-theme="dark"] .challan-scan,:root[data-theme="dark"] .business-add-alias-v2:not([hidden]),:root[data-theme="dark"] .add-product-card .size-row{background:var(--surface,#0e2e2b);border-color:var(--line,#275750)}
++@media(max-width:1050px){.business-product-grid-v2{grid-template-columns:1fr}.business-add-alias-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.business-add-alias-fields label:last-child{grid-column:1/-1}}
++@media(max-width:760px){
++  .add-product-card .product-main-fields{grid-template-columns:1fr!important;gap:13px}
++  .add-product-card .product-fields{grid-template-columns:1fr}
++  .add-product-card .product-fields>.field{grid-column:1/-1!important}
++  .add-product-card #size-rows{grid-template-columns:1fr;max-height:38vh}
++  .add-product-card .size-row{grid-template-columns:60px 87px minmax(0,1fr) 30px;gap:6px}
++  .sku-entry-row{grid-template-columns:1fr 1fr 34px}
++  .sku-entry-row .sku-entry-code{grid-column:1/-1}
++  .sku-entry-row .sku-entry-size{grid-column:1/3}
++  .sku-entry-row .sku-entry-remove{grid-column:3;grid-row:2}
++  .business-product-v2{padding:12px}
++  .business-alias-title{flex-wrap:wrap}
++  .challan-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
++  .challan-detail-head{flex-wrap:wrap}
++  .challan-detail-head>div:last-child{justify-items:start;text-align:left}
++}
++
++.challan-scan-card{position:relative}
++.challan-scan-remove{position:absolute;right:-5px;top:-6px;width:23px;height:23px;padding:0;border:1px solid var(--line,#dce6df);border-radius:50%;color:#ad3b3b;background:var(--panel,#fff);font-size:17px;cursor:pointer}
++.challan-scan-remove:hover{background:#fbe1df}
++@media(max-width:760px){
++ .sku-entry-row{grid-template-columns:minmax(0,1fr) 34px}
++ .sku-entry-row .sku-entry-code{grid-column:1/-1}
++ .sku-entry-row .sku-entry-market{grid-column:1/-1}
++ .sku-entry-row .sku-entry-size{grid-column:1;grid-row:auto}
++ .sku-entry-row .sku-entry-remove{grid-column:2;grid-row:3}
++}
+--- a/tests/test_business_workflows.py
++++ b/tests/test_business_workflows.py
+@@ -1,6 +1,7 @@
+ """Offline, ephemeral database tests: no live Railway writes."""
+ import asyncio
+ from io import BytesIO
++from zipfile import ZipFile
+ import os
+ from pathlib import Path
+ import sys
+@@ -16,10 +17,11 @@
+ from fastapi import HTTPException, UploadFile
+ from database import Base, engine, SessionLocal
+ import models, business_models
+-from business_models import PurchaseChallan, MarketplaceSkuAlias
++from business_models import PurchaseChallan, MarketplaceSkuAlias, ProductMarketplaceAlias, PurchaseChallanAttachment
+ from business_api import (import_challan, update_receipt, push_challan_to_inventory,
+     ReceiptLine, ReceiptUpdate, upsert_product_cost, upsert_variant_cost,
+-    add_alias, costing_summary, costing_designs, list_purchase_challans, parse_challan_file)
++    add_alias, add_product_alias, costing_summary, costing_designs, list_purchase_challans, parse_challan_file,
++    upload_challan_attachments, download_challan_attachment, export_challan, _simple_xlsx)
+ from services import excel_service
+ 
+ 
+@@ -36,6 +38,7 @@
+     def setUp(self):
+         self.db = SessionLocal()
+         # isolate each test without breaking other model tables
++        self.db.query(business_models.PurchaseChallanAttachment).delete()
+         self.db.query(business_models.PurchaseChallanLine).delete()
+         self.db.query(business_models.PurchaseChallan).delete()
+         self.db.query(models.OrderLine).delete()
+@@ -43,6 +46,7 @@
+         self.db.query(models.InventoryTransaction).delete()
+         self.db.query(models.Alert).delete()
+         self.db.query(business_models.MarketplaceSkuAlias).delete()
++        self.db.query(business_models.ProductMarketplaceAlias).delete()
+         self.db.query(business_models.VariantCost).delete()
+         self.db.query(business_models.ProductCost).delete()
+         self.db.query(models.Variant).delete()
+@@ -171,5 +175,91 @@
+         self.assertEqual(line.qty_ordered,2)
+         self.assertEqual(v.current_stock,15, 'Order import never deducts by itself')
+ 
++
++    def test_product_wide_alias_requires_size_and_uses_correct_variant(self):
++        p=models.Product(sku='MSTR-ALIAS',name='Dress')
++        self.db.add(p);self.db.flush()
++        for size in ['S','M']:
++            self.db.add(models.Variant(product_id=p.id,size=size,variant_code=f'MSTR-ALIAS_{size}',
++                            current_stock=9,last_counted_at=models.utcnow()))
++        self.db.flush()
++        add_product_alias(self.db,p,'Twins','TWIN_DRESS')
++        self.db.commit()
++        result=excel_service.process_order_excel(self.db,b'Seller SKU Code,Size,Qty\nTWIN_DRESS,S,2\nTWIN_DRESS,M,3\n','order.csv')
++        rows=self.db.query(models.OrderLine).all()
++        self.assertEqual(len(rows),2)
++        self.assertEqual({r.size:r.qty_ordered for r in rows},{'S':2,'M':3})
++        self.assertTrue(all(r.variant_id is not None for r in rows))
++        self.assertEqual(sum(v.current_stock for v in self.db.query(models.Variant).all()),18)
++        with self.assertRaises(HTTPException) as error:
++            add_product_alias(self.db,models.Product(sku='UNSAVED',name='Other'),'Ajio','TWIN_DRESS')
++        self.assertEqual(error.exception.status_code,409)
++
++    def test_product_wide_alias_with_size_suffix_matches(self):
++        product=models.Product(sku='MASTER-SUFFIX',name='Summer kurta')
++        self.db.add(product);self.db.flush()
++        v=models.Variant(product_id=product.id,size='XL',variant_code='MASTER-SUFFIX_XL',
++                         current_stock=7,last_counted_at=models.utcnow())
++        self.db.add(v);self.db.flush()
++        add_product_alias(self.db,product,'Ajio','AJIO-SUMMER')
++        self.db.commit()
++        excel_service.process_order_excel(self.db,b'Seller SKU Code,Qty\nAJIO-SUMMER_XL,2\n','size_suffix.csv')
++        line=self.db.query(models.OrderLine).one()
++        self.assertEqual(line.variant_id,v.id)
++        self.assertEqual(line.size,'XL')
++        self.assertEqual(v.current_stock,7)
++
++    def test_product_wide_alias_without_size_stays_unmapped(self):
++        p=models.Product(sku='MSTR-BASE',name='My special dress')
++        self.db.add(p);self.db.flush()
++        for size in ['S','L']:
++            self.db.add(models.Variant(product_id=p.id,size=size,variant_code=f'MSTR-BASE_{size}',
++                            current_stock=2,last_counted_at=models.utcnow()))
++        self.db.flush();add_product_alias(self.db,p,'Moda','MODA_SPECIAL');self.db.commit()
++        excel_service.process_order_excel(self.db,b'Seller SKU Code,Quantity\nMODA_SPECIAL,2\n','without_size.csv')
++        line=self.db.query(models.OrderLine).one()
++        self.assertIsNone(line.variant_id)
++        self.assertEqual(line.status,models.OrderLineStatus.SKU_NOT_FOUND)
++
++    def test_challan_three_columns_resolves_master_sku_and_costs(self):
++        p=models.Product(sku='URVISHA-RED',name='URVISHA RED')
++        self.db.add(p);self.db.commit()
++        data=b'Product Name,Size,Qty\nURVISHA RED,S,3\nURVISHA RED,M,4\n'
++        batch=asyncio.run(import_challan(file=UploadFile(filename='supplier.csv',file=BytesIO(data)),
++            party_name='Shree',challan_no='CH-THREE',invoice_no='INVOICE-1',order_date='2026-11-20',db=self.db))
++        self.assertEqual(batch['ordered'],7)
++        self.assertEqual({x['sku'] for x in batch['lines']},{'URVISHA-RED'})
++        self.assertEqual(self.db.query(models.Variant).count(),0)
++        update=update_receipt(batch['id'],ReceiptUpdate(lines=[
++            ReceiptLine(line_id=line['id'],received=line['qty_ordered'],unit_cost=Decimal('785'))
++            for line in batch['lines']]),db=self.db)
++        self.assertEqual(update['received_value_known'],5495.0)
++        self.assertEqual(update['status'],'READY')
++        export=export_challan(batch['id'],db=self.db)
++        with ZipFile(BytesIO(_simple_xlsx([['Product Name','Size','Qty'],['X','S',3]]))) as z:
++            self.assertIn('xl/worksheets/sheet1.xml',z.namelist())
++        self.assertEqual(push_challan_to_inventory(batch['id'],db=self.db)['received_pieces'],7)
++        self.assertEqual({v.size:v.current_stock for v in self.db.query(models.Variant).all()}, {'S':3,'M':4})
++
++    def test_challan_attachment_shared_across_multiple_products(self):
++        import business_api as m
++        from unittest.mock import patch
++        csv=b'Product Name,Size,Qty\nKurta,S,2\nShirt,L,3\n'
++        batch=asyncio.run(import_challan(file=UploadFile(filename='a.csv',file=BytesIO(csv)),
++            party_name='Shree',challan_no='CH-PHOTO',invoice_no='',order_date='2026-11-20',db=self.db))
++        with tempfile.TemporaryDirectory() as tmp, patch.object(m,'CHALLAN_IMAGE_DIR',Path(tmp)):
++            from PIL import Image
++            buf=BytesIO(); Image.new('RGB',(8,8),(240,210,210)).save(buf,format='PNG')
++            scan=UploadFile(filename='bill.png',file=BytesIO(buf.getvalue()))
++            outcome=asyncio.run(upload_challan_attachments(batch['id'],files=[scan],db=self.db))
++            self.assertEqual(len(outcome['attachments']),1)
++            self.assertEqual(len(outcome['lines']),2)
++            a=outcome['attachments'][0]
++            result=download_challan_attachment(batch['id'],a['id'],db=self.db)
++            self.assertTrue(Path(result.path).is_file())
++            self.assertEqual(result.media_type,'image/png')
++            with self.assertRaises(HTTPException):
++                download_challan_attachment(batch['id'],99999,db=self.db)
++
+ from decimal import Decimal
+ if __name__ == '__main__': unittest.main()

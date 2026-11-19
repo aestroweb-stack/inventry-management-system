@@ -2921,37 +2921,26 @@ $("assistant-identify-input")?.addEventListener("change", (event) => {
 for (const id of ["hero-ask-myraa","workspace-ask-myraa"]) $(id)?.addEventListener("click", () => openAssistant());
 for (const id of ["hero-photo-search","workspace-photo-search"]) $(id)?.addEventListener("click", () => switchView("visual"));
 
+// Account login is handled by workspace-auth.js; no APP_PASSWORD or shared
+// workspace password is ever sent by the browser.
 async function checkMyraaAccess() {
   try {
-    const response = await fetch(`${API}/auth/status`);
+    const response = await fetch(`${API}/auth/status`, {credentials:"same-origin"});
+    if (!response.ok) throw new Error("Login status unavailable");
     const status = await response.json();
-    if (status.login_required && status.authenticated) $("logout-button").hidden = false;
-    if (status.configuration_required) {
-      const overlay = $("myraa-login"); overlay.hidden = false;
-      $("myraa-login-error").textContent = "Railway Variables mein APP_PASSWORD set karein, phir redeploy karein.";
-      $("myraa-login-form").querySelector("button").disabled = true;
-    } else if (status.login_required && !status.authenticated) {
-      $("myraa-login").hidden = false;
-      $("myraa-login-password").focus();
+    if ($("logout-button")) $("logout-button").hidden = !status.authenticated;
+    if (!status.authenticated) {
+      const overlay = $("myraa-login");
+      if (overlay) overlay.hidden = false;
+      if (status.configuration_required) {
+        $("myraa-login-error").textContent = "Railway par MYRAA_USER_SESSION_SECRET configure karein.";
+      }
     }
-  } catch { /* Other API calls will surface network errors. */ }
+  } catch {
+    const overlay = $("myraa-login");
+    if (overlay) overlay.hidden = false;
+  }
 }
-$("myraa-login-form")?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const input = $("myraa-login-password");
-  const error = $("myraa-login-error"); error.textContent = "";
-  try {
-    const response = await fetch(`${API}/auth/login`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:input.value})});
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "Sign in failed.");
-    window.location.reload();
-  } catch (err) { error.textContent = err.message; }
-});
-$("logout-button")?.addEventListener("click", async () => {
-  await fetch(`${API}/auth/logout`,{method:"POST"});
-  for (const key of ["inventoryAssistantHistory.v1","inventoryAssistantSessions.v1","inventoryAssistantSessionId.v1"]) localStorage.removeItem(key);
-  window.location.reload();
-});
 checkMyraaAccess();
 
 async function loadAlerts() {

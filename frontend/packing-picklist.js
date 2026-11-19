@@ -63,7 +63,9 @@
       $('packing-page-info').textContent = `Page ${currentPage} of ${pageCount}`;
       $('packing-preview-total').textContent = `${data.preview_total_rows} merged rows · 25 per page`;
       previewed = true;
-      status.textContent = `Verified ${Number(data.total_qty).toLocaleString()} pieces · ${data.picklist_date}. ${data.review_count ? `${data.review_count} rows need review. Check optional Audit tabs.` : 'No review warnings.'}`;
+      const mapped=Number(data.master_sku_mapped_qty||0);
+      const unmapped=Number(data.total_qty||0)-mapped;
+      status.textContent = `Verified ${Number(data.total_qty).toLocaleString()} pieces · ${data.picklist_date}. ${mapped.toLocaleString()} pcs mapped to registered Master SKUs; ${unmapped.toLocaleString()} pcs kept in existing picklist format. ${data.review_count ? `${data.review_count} rows need review. Check optional Audit tabs.` : 'No review warnings.'}`;
     } catch(error) {
       status.textContent = 'Preview failed: ' + String(error.message || error);
       status.classList.add('packing-error');

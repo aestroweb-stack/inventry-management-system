@@ -364,6 +364,190 @@ def transform(records, *, brand_override="AUTO", picklist_date=None, filename=""
             "items":items,"brand_items":brand_items,"audit":lines,"review":review}
 
 
+
+
+def apply_registered_master_skus(result: dict, db) -> dict:
+    """Read-only catalog resolution for picklist EXPORT and PREVIEW.
+
+    Use ONLY registered exact SKU codes (or their unambiguous legacy separators):
+      * active stockable Variant codes and variant marketplace aliases;
+      * product-wide aliases and Master SKUs with an explicit or suffix size.
+    Never fuzzy-match a design, assume a size, or edit catalog/order stock.
+    Unmapped and ambiguous rows retain the legacy printable SKU unchanged.
+    """
+    from collections import defaultdict
+    from sqlalchemy.orm import joinedload
+    from models import Product, Variant
+    from business_models import MarketplaceSkuAlias, ProductMarketplaceAlias
+
+    active = db.query(Variant).join(Product, Variant.product_id == Product.id).options(
+        joinedload(Variant.product)
+    ).filter(Variant.is_deleted.is_(False), Product.is_deleted.is_(False)).all()
+    variants = {v.id: v for v in active}
+    by_product_size = {(v.product_id, _norm_size(v.size)): v for v in active}
+    code_to_variant = defaultdict(set)
+    code_to_product = defaultdict(set)
+    product_id_by_sku = defaultdict(set)
+    for v in active:
+        for code in (v.variant_code, v.seller_sku_code, v.marketplace_sku_code):
+            if code:
+                code_to_variant[str(code).strip().upper()].add(v.id)
+        product_id_by_sku[str(v.product.sku).strip().upper()].add(v.product_id)
+    for a in db.query(MarketplaceSkuAlias).all():
+        if a.variant_id in variants:
+            code_to_variant[str(a.normalized_code).strip().upper()].add(a.variant_id)
+    active_product_ids = {v.product_id for v in active}
+    for a in db.query(ProductMarketplaceAlias).all():
+        if a.product_id in active_product_ids:
+            code_to_product[str(a.normalized_code).strip().upper()].add(a.product_id)
+    for code, ids in product_id_by_sku.items():
+        code_to_product[code].update(ids)
+
+    def candidate_keys(original: str):
+        raw = str(original).strip().upper()
+        # Preserve explicit matching first; never strip arbitrary alphanumeric
+        # product suffixes. Legacy `SKU-S` vs `SKU_S` is checked separately.
+        keys = [raw]
+        normal = _canon(raw)
+        if normal != raw:
+            keys.append(normal)
+        if '-' in raw or '_' in raw:
+            for sep in ('-', '_'):
+                before, found, after = raw.rpartition(sep)
+                if before and found and _valid_size(after):
+                    alternate = before + ('_' if sep == '-' else '-') + after
+                    if alternate not in keys:
+                        keys.append(alternate)
+        return keys
+
+    def one_variant(ids):
+        return variants[next(iter(ids))] if len(ids) == 1 else None
+
+    def find_variant(line):
+        keys = candidate_keys(line['original_sku'])
+        size = _norm_size(line['size'])
+        # Conflicting exact codes are ambiguous and MUST NOT fall back to a
+        # product-wide match. Avoid accidental SKU remapping.
+        for key in keys:
+            hits = code_to_variant.get(key, set())
+            if hits:
+                if len(hits) != 1:
+                    return None, 'Ambiguous catalog SKU (multiple sizes/products)'
+                variant = one_variant(hits)
+                if variant and size not in ('', 'UNKNOWN') and _norm_size(variant.size) != size:
+                    return None, f'Catalog size {_norm_size(variant.size)} conflicts with uploaded size {size}'
+                return variant, None
+        # Product-wide matching requires the size from sheet or SKU suffix.
+        # Exact alias/product code is prioritized over removing any suffix.
+        choices = []
+        for key in keys:
+            if key in code_to_product:
+                choices.append((key, size))
+            for sep in ('_', '-'):
+                base, delimiter, ending = key.rpartition(sep)
+                if delimiter and _valid_size(ending):
+                    suffix_size = _norm_size(ending)
+                    if size not in ('', 'UNKNOWN') and size != suffix_size:
+                        continue
+                    choices.append((base, suffix_size))
+        matches = set()
+        for key, chosen_size in choices:
+            if chosen_size in ('', 'UNKNOWN') or not _valid_size(chosen_size):
+                continue
+            for product_id in code_to_product.get(key, ()):
+                variant = by_product_size.get((product_id, chosen_size))
+                if variant:
+                    matches.add(variant.id)
+        if len(matches) > 1:
+            return None, 'Ambiguous product-wide catalog SKU'
+        return one_variant(matches), None
+
+    # Build a separate copy, so old importer logic remains unchanged.
+    from copy import deepcopy
+    output = deepcopy(result)
+    mappings = 0
+    mapped_qty = 0
+    for line in output['audit']:
+        variant, error = find_variant(line)
+        if error:
+            line['note'] = '; '.join(x for x in (line.get('note'), error) if x)
+            output['review'].append({'row': line['row'], 'sku': line['original_sku'],
+                'qty': line['qty'], 'party': line['party'], 'issue': error})
+        if variant is None:
+            continue
+        master_sku = variant.product.sku.strip().upper()
+        master_size = _norm_size(variant.size)
+        master_print = f'{master_sku}_{master_size}'
+        line['master_sku'] = master_sku
+        line['master_variant_code'] = variant.variant_code
+        line['pick_sku'] = master_print
+        line['design'] = master_sku
+        line['size'] = master_size
+        mappings += 1
+        mapped_qty += line['qty']
+
+    # Some marketplaces omit the party on one of several registered aliases
+    # for the SAME physical Master SKU and size.  When exactly ONE named party
+    # exists for the brand/master/size, merge those NO PARTY rows into it.
+    # Do not infer party for an unregistered design, or when known parties
+    # conflict (e.g. V and NK), because that can misroute packing work.
+    known_parties = defaultdict(set)
+    for line in output['audit']:
+        if line.get('master_sku') and line['party'] != 'NO PARTY':
+            known_parties[(line['brand'], line['master_sku'], line['size'])].add(line['party'])
+    for line in output['audit']:
+        if not line.get('master_sku') or line['party'] != 'NO PARTY':
+            continue
+        choices = known_parties[(line['brand'], line['master_sku'], line['size'])]
+        if len(choices) == 1:
+            line['party'] = next(iter(choices))
+            line['note'] = '; '.join(filter(None, (line.get('note'), 'Party grouped by exact registered Master SKU')))
+
+    brand_groups = defaultdict(lambda: {'qty': 0, 'source_rows': 0})
+    print_groups = defaultdict(lambda: {'qty': 0, 'source_rows': 0, 'brands': set()})
+    for line in output['audit']:
+        # Match IDs, rather than displayed text, distinguish mapped and
+        # unknown rows even when their printed SKUs happen to be identical.
+        identity = ('master', line['master_sku'], line['size']) if line.get('master_sku') else (
+            'unmapped', line['design'], line['size'])
+        brand_key = (line['brand'], line['party'], identity)
+        global_key = (line['party'], identity)
+        brand_groups[brand_key]['qty'] += line['qty']
+        brand_groups[brand_key]['source_rows'] += 1
+        brand_groups[brand_key]['print_sku'] = line['pick_sku']
+        brand_groups[brand_key]['design'] = line['design']
+        brand_groups[brand_key]['size'] = line['size']
+        print_groups[global_key]['qty'] += line['qty']
+        print_groups[global_key]['source_rows'] += 1
+        print_groups[global_key]['brands'].add(line['brand'])
+        print_groups[global_key]['print_sku'] = line['pick_sku']
+        print_groups[global_key]['design'] = line['design']
+        print_groups[global_key]['size'] = line['size']
+    output['brand_items'] = [
+        {'brand': brand, 'party': party, 'design': v['design'], 'size': v['size'],
+         'qty': v['qty'], 'pick_sku': v['print_sku'], 'source_rows': v['source_rows']}
+        for (brand, party, _identity), v in brand_groups.items()
+    ]
+    output['items'] = [
+        {'party': party, 'design': v['design'], 'size': v['size'], 'qty': v['qty'],
+         'pick_sku': v['print_sku'], 'source_rows': v['source_rows'],
+         'brands': ', '.join(sorted(v['brands']))}
+        for (party, _identity), v in print_groups.items()
+    ]
+    if sum(x['qty'] for x in output['brand_items']) != output['total_qty'] or sum(
+            x['qty'] for x in output['items']) != output['total_qty']:
+        raise PicklistError('Master SKU mapping broke quantity reconciliation')
+    output['merged_rows'] = len(output['brand_items'])
+    output['party_totals'] = dict(Counter({party: sum(line['qty'] for line in output['audit'] if line['party'] == party)
+                                            for party in {line['party'] for line in output['audit']}}))
+    output['brand_totals'] = dict(Counter({brand: sum(line['qty'] for line in output['audit'] if line['brand'] == brand)
+                                            for brand in {line['brand'] for line in output['audit']}}))
+    output['review_count'] = len(output['review'])
+    output['master_sku_mapped_rows'] = mappings
+    output['master_sku_mapped_qty'] = mapped_qty
+    return output
+
+
 def parse_upload(payload, filename, *, brand_override="AUTO", picklist_date=None):
     if not payload or len(payload) > MAX_UPLOAD_BYTES:
         raise PicklistError("Excel empty or over 12 MB")

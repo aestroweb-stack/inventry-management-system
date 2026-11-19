@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager, al
 from database import Base, engine, get_db, SessionLocal
 import models
 import business_models
+import workspace_models  # Register account table before create_all
+from workspace_auth import router as workspace_auth_router, admin as workspace_admin_router, account_from_request
 import schemas
 from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias, add_product_alias
 from services import (
@@ -120,6 +122,8 @@ async def _app_lifespan(_app):
 
 app = FastAPI(title="Inventory Management System", version="1.4", lifespan=_app_lifespan)
 app.include_router(business_router)
+app.include_router(workspace_auth_router)
+app.include_router(workspace_admin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -146,22 +150,25 @@ async def protect_inventory_mcp(request: Request, call_next):
                 supplied = authorization[7:].strip()
         if not supplied or not hmac.compare_digest(supplied, expected):
             return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
-    # Stored product images are private inventory data; require the same login
-    # as inventory reads (the generic static frontend remains public).
-    if request.url.path.startswith("/static/product_images/"):
-        if app_auth.deployment_missing_password():
-            return Response(status_code=503)
-        if app_auth.required() and not app_auth.verify_session(request.cookies.get(app_auth.COOKIE, "")):
-            return Response(status_code=401)
-    # Other API routes use a separate operator login, not the remote MCP key.
-    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/mcp"):
-        if request.url.path not in ("/api/auth/login", "/api/auth/status", "/api/health"):
-            if app_auth.deployment_missing_password():
-                return JSONResponse({"detail": "Set APP_PASSWORD in Railway Variables to enable the inventory API."}, status_code=503)
-            if app_auth.required() and not app_auth.verify_session(request.cookies.get(app_auth.COOKIE, "")):
-                return JSONResponse({"detail": "Login required."}, status_code=401)
-            if app_auth.required() and request.method not in ("GET", "HEAD", "OPTIONS") and not app_auth.origin_allowed(request):
-                return JSONResponse({"detail": "Invalid request origin."}, status_code=403)
+    # The full MYRAA workspace requires an approved personal account.
+    # APP_PASSWORD is intentionally not read anywhere in this authentication path.
+    path = request.url.path
+    account = account_from_request(request)
+    if path.startswith("/static/product_images/") and account is None:
+        return Response(status_code=401)
+    # Signup and OTP endpoints independently validate identity; MCP has its own
+    # bearer API key check above. Public health and auth status are read-only.
+    if (path.startswith("/api/") and not path.startswith("/api/mcp")
+            and not path.startswith("/api/workspace-auth/")):
+        if path not in ("/api/auth/status", "/api/auth/login", "/api/health"):
+            if len(os.getenv("MYRAA_USER_SESSION_SECRET", "")) < 32:
+                return JSONResponse({"detail": "MYRAA_USER_SESSION_SECRET must be configured"}, status_code=503)
+            if account is None:
+                return JSONResponse({"detail": "MYRAA account login required"}, status_code=401)
+            if account.role == "viewer" and request.method not in ("GET", "HEAD", "OPTIONS"):
+                return JSONResponse({"detail": "Read-only account: ask admin for manager access"}, status_code=403)
+            if request.method not in ("GET", "HEAD", "OPTIONS") and not app_auth.origin_allowed(request):
+                return JSONResponse({"detail": "Invalid request origin"}, status_code=403)
     return await call_next(request)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -182,40 +189,29 @@ app.mount("/api/mcp", _inventory_mcp_http_app, name="inventory-mcp")
 
 @app.get("/api/auth/status")
 def auth_status(request: Request):
-    return {"login_required": app_auth.required(),
-            "authenticated": app_auth.verify_session(request.cookies.get(app_auth.COOKIE, "")) if app_auth.required() else True,
-            "configuration_required": app_auth.deployment_missing_password()}
+    account = account_from_request(request)
+    return {"login_required": True,
+            "authenticated": account is not None,
+            "owner": bool(account and account.role == "admin"),
+            "user_role": account.role if account else None,
+            "configuration_required": len(os.getenv("MYRAA_USER_SESSION_SECRET", "")) < 32,
+            "signup_enabled": bool(os.getenv("MYRAA_SMTP_HOST") and os.getenv("MYRAA_SMTP_USER")
+                                   and os.getenv("MYRAA_SMTP_PASSWORD") and os.getenv("MYRAA_SMTP_FROM"))}
 
 
 @app.post("/api/auth/login")
-async def auth_login(request: Request):
-    if not app_auth.origin_allowed(request):
-        raise HTTPException(403, "Invalid login origin.")
-    if app_auth.deployment_missing_password():
-        raise HTTPException(503, "Set APP_PASSWORD in Railway Variables.")
-    if not app_auth.required():
-        return {"ok": True}
-    client_key = request.client.host if request.client else "unknown"
-    if not app_auth.login_allowed(client_key):
-        raise HTTPException(429, "Too many failed logins. Retry later.")
-    data = await request.json()
-    if not isinstance(data, dict) or not app_auth.verify_password(str(data.get("password", ""))):
-        app_auth.record_failed_login(client_key)
-        # Generic error to avoid leaking credentials.
-        raise HTTPException(401, "Incorrect password.")
-    app_auth.clear_failed_logins(client_key)
-    result = JSONResponse({"ok": True})
-    result.set_cookie(app_auth.COOKIE, app_auth.create_session(), httponly=True,
-                      secure=bool(os.getenv("RAILWAY_ENVIRONMENT") or request.url.scheme == "https"),
-                      samesite="strict", max_age=app_auth.SESSION_AGE, path="/")
-    return result
+async def auth_login_deprecated():
+    # Do not accidentally re-enable the old shared-password sign-in when an
+    # operator leaves APP_PASSWORD in Railway environment variables.
+    raise HTTPException(410, "Shared password login retired. Use MYRAA account email/password + OTP.")
 
 
 @app.post("/api/auth/logout")
-def auth_logout():
-    result = JSONResponse({"ok": True})
-    result.delete_cookie(app_auth.COOKIE, path="/")
-    return result
+def auth_logout_deprecated():
+    # Old link compatibility: real logout is /api/workspace-auth/logout.
+    response = JSONResponse({"ok": True, "message": "Use /api/workspace-auth/logout"})
+    response.delete_cookie("myraa_session", path="/")
+    return response
 
 
 @app.get("/api/health")
@@ -1381,6 +1377,7 @@ async def packing_picklist_preview(
     picklist_date: str = Form(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
 ):
     data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
     try:
@@ -1388,6 +1385,7 @@ async def packing_picklist_preview(
             data, file.filename or "", brand_override=brand_override,
             picklist_date=picklist_date or None,
         )
+        result = packing_picklist_service.apply_registered_master_skus(result, db)
     except packing_picklist_service.PicklistError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Page over brand-aware merged rows, not source or cross-brand rows.
@@ -1401,6 +1399,8 @@ async def packing_picklist_preview(
     return {
         "source_rows": result["source_rows"], "total_qty": result["total_qty"],
         "merged_rows": result["merged_rows"], "review_count": result["review_count"],
+        "master_sku_mapped_rows": result["master_sku_mapped_rows"],
+        "master_sku_mapped_qty": result["master_sku_mapped_qty"],
         "picklist_date": result["picklist_date"],
         "party_totals": result["party_totals"], "brand_totals": result["brand_totals"],
         "sample_items": items[(page - 1) * page_size : page * page_size],
@@ -1416,6 +1416,7 @@ async def packing_picklist_export(
     brand_override: str = Form("AUTO"),
     picklist_date: str = Form(""),
     include_audit: bool = Form(False),
+    db: Session = Depends(get_db),
 ):
     data = await file.read(packing_picklist_service.MAX_UPLOAD_BYTES + 1)
     try:
@@ -1423,6 +1424,7 @@ async def packing_picklist_export(
             data, file.filename or "", brand_override=brand_override,
             picklist_date=picklist_date or None,
         )
+        result = packing_picklist_service.apply_registered_master_skus(result, db)
         output = packing_picklist_service.to_xlsx(result, include_audit=include_audit)
     except packing_picklist_service.PicklistError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

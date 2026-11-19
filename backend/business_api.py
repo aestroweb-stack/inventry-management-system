@@ -15,12 +15,12 @@ from PIL import Image, UnidentifiedImageError
 from collections import defaultdict
 from datetime import datetime, timezone, date
 from decimal import Decimal, InvalidOperation
-from typing import Optional
+from typing import Optional, Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
@@ -375,27 +375,59 @@ def serialize_challan(batch: PurchaseChallan):
 
 
 @router.get("/purchase-challans")
-def list_purchase_challans(db: Session = Depends(get_db)):
-    batches = db.query(PurchaseChallan).options(selectinload(PurchaseChallan.lines)).order_by(PurchaseChallan.id.desc()).limit(200).all()
-    result = [serialize_challan(b) for b in batches]
-    pending_cost_known = Decimal("0")
-    pending_unpriced = 0
-    for batch in result:
-        if batch["status"] == "POSTED":
-            continue
-        for line in batch["lines"]:
-            if line["unit_cost"] is None:
-                pending_unpriced += line["pending"]
-            else:
-                pending_cost_known += Decimal(str(line["unit_cost"])) * line["pending"]
-    return {"items": result,
-            "received_pieces": sum(b["received"] for b in result),
-            "received_value_known": sum(b["received_value_known"] for b in result),
-            "received_unpriced_pieces": sum(b["received_unpriced_pieces"] for b in result),
-            "pending_pieces": sum(b["pending"] for b in result if b["status"] != "POSTED"),
-            "ordered_pieces": sum(b["ordered"] for b in result),
-            "pending_cost_known": float(pending_cost_known),
-            "pending_unpriced_pieces": pending_unpriced}
+def list_purchase_challans(
+    q: str = "", date_filter: str = "",
+    limit: Annotated[int, Query(ge=1, le=100)] = 6,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    db: Session = Depends(get_db)
+):
+    """Search every challan; calculate inventory-wide totals, not just current page."""
+    query = db.query(PurchaseChallan)
+    term = q.strip()[:100]
+    if term:
+        term_sql = f"%{term}%"
+        query = query.filter(or_(
+            PurchaseChallan.party_name.ilike(term_sql),
+            PurchaseChallan.challan_no.ilike(term_sql),
+            PurchaseChallan.invoice_no.ilike(term_sql),
+            PurchaseChallan.source_filename.ilike(term_sql),
+            PurchaseChallan.order_date.ilike(term_sql),
+            PurchaseChallan.lines.any(or_(
+                PurchaseChallanLine.name.ilike(term_sql),
+                PurchaseChallanLine.sku.ilike(term_sql),
+            )),
+        ))
+    if date_filter:
+        try:
+            datetime.strptime(date_filter, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(422, "Date must be YYYY-MM-DD") from exc
+        query = query.filter(PurchaseChallan.order_date == date_filter)
+    count = query.count()
+    batches = (query.options(selectinload(PurchaseChallan.lines))
+               .order_by(PurchaseChallan.id.desc()).offset(offset).limit(limit).all())
+    page = [serialize_challan(b) for b in batches]
+
+    # All-time totals independently of current search and pagination.
+    pending = PurchaseChallanLine.qty_ordered - PurchaseChallanLine.qty_received
+    not_posted = PurchaseChallan.status != "POSTED"
+    cost_known = PurchaseChallanLine.unit_cost.isnot(None)
+    sums = db.query(
+        func.coalesce(func.sum(PurchaseChallanLine.qty_ordered), 0),
+        func.coalesce(func.sum(PurchaseChallanLine.qty_received), 0),
+        func.coalesce(func.sum(case((not_posted, pending), else_=0)), 0),
+        func.coalesce(func.sum(case((cost_known, PurchaseChallanLine.qty_received * PurchaseChallanLine.unit_cost), else_=0)), 0),
+        func.coalesce(func.sum(case((PurchaseChallanLine.unit_cost.is_(None), PurchaseChallanLine.qty_received), else_=0)), 0),
+        func.coalesce(func.sum(case((not_posted & cost_known, pending * PurchaseChallanLine.unit_cost), else_=0)), 0),
+        func.coalesce(func.sum(case((not_posted & PurchaseChallanLine.unit_cost.is_(None), pending), else_=0)), 0),
+    ).join(PurchaseChallan, PurchaseChallanLine.challan_id == PurchaseChallan.id).one()
+    ordered, received, remaining, received_value, received_unpriced, pending_value, pending_unpriced = sums
+    return {"items": page, "total": count, "limit": limit, "offset": offset,
+            "received_pieces": int(received or 0), "received_value_known": float(received_value or 0),
+            "received_unpriced_pieces": int(received_unpriced or 0),
+            "pending_pieces": int(remaining or 0), "ordered_pieces": int(ordered or 0),
+            "pending_cost_known": float(pending_value or 0),
+            "pending_unpriced_pieces": int(pending_unpriced or 0)}
 
 
 @router.get("/purchase-challans/template")
