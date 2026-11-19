@@ -208,10 +208,14 @@ function askConfirm(title, body, action, okLabel = "Delete") {
 }
 
 // ---------------- Nav: drawer + view switching ----------------
-function openDrawer() { $("sidebar").classList.add("is-open"); $("nav-backdrop").hidden = false; }
-function closeDrawer() { $("sidebar").classList.remove("is-open"); $("nav-backdrop").hidden = true; }
-$("menu-toggle").addEventListener("click", openDrawer);
+function openDrawer() { $("sidebar").classList.add("is-open"); $("nav-backdrop").hidden = false; $("menu-toggle")?.setAttribute("aria-expanded", "true"); }
+function closeDrawer() { $("sidebar").classList.remove("is-open"); $("nav-backdrop").hidden = true; $("menu-toggle")?.setAttribute("aria-expanded", "false"); }
+$("menu-toggle").addEventListener("click", () => {
+  if ($("sidebar").classList.contains("is-open")) closeDrawer();
+  else openDrawer();
+});
 $("sidebar-collapse").addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 760px)").matches) { closeDrawer(); return; }
   const collapsed = $("shell").classList.toggle("sidebar-collapsed");
   localStorage.setItem("sidebarCollapsed", String(collapsed));
   $("sidebar-collapse").setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
@@ -219,6 +223,7 @@ $("sidebar-collapse").addEventListener("click", () => {
 });
 if (localStorage.getItem("sidebarCollapsed") === "true") $("shell").classList.add("sidebar-collapsed");
 $("nav-backdrop").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && $("sidebar").classList.contains("is-open")) closeDrawer(); });
 $("topbar-alerts").addEventListener("click", () => switchView("alerts"));
 
 document.querySelectorAll(".rail-link[data-view]").forEach((btn) => btn.addEventListener("click", () => switchView(btn.dataset.view)));
@@ -247,6 +252,7 @@ function switchView(name, { updateUrl = true } = {}) {
     loadLatestProducts();
   }
   window.__keepProductSearch = false;
+  if (name === "challans") window.myraaLoadChallans?.();
   if (name === "orders") loadOrderHistory();
   if (name === "reorder") loadReorderList();
   if (name === "alerts") loadAlerts();
@@ -478,6 +484,7 @@ function renderDetail(product, container, opts = {}) {
       <div class="seat-add" id="seat-add"><i class="fa-solid fa-plus"></i> Add size</div>
     </div>`;
 
+  window.myraaEnhanceProductDetail?.(product, container, opts);
   container.querySelectorAll(".seat").forEach((seat) => {
     const code = seat.dataset.code;
     seat.querySelector(".seat-save").addEventListener("click", async () => {
@@ -814,6 +821,7 @@ function addSizeRow(size = "") {
   row.innerHTML = `
     <input class="input sz size-size" value="${esc(size)}" placeholder="Size">
     <div><div class="lbl">Stock</div><input class="input num-in size-stock" type="number" value="" placeholder="0" min="0" inputmode="numeric"></div>
+    <div><div class="lbl">Unit Cost ₹</div><input class="input num-in size-cost" type="number" step="0.01" min="0" placeholder="Default" inputmode="decimal"></div>
     <div><div class="lbl">Alert below</div><input class="input num-in size-threshold" type="number" value="5" min="0"></div>
     <div><div class="lbl">Target</div><input class="input num-in size-target" type="number" value="20" min="0"></div>
     <button type="button" class="row-remove" aria-label="Remove size"><i class="fa-solid fa-trash-can"></i></button>`;
@@ -825,7 +833,7 @@ function addSizeRow(size = "") {
     const index = rows.indexOf(row);
     if (input.classList.contains("size-stock")) {
       const next = rows[index + 1]?.querySelector(".size-stock");
-      if (next) next.focus();
+      if (next) { next.focus(); next.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
       else $("add-product-form").querySelector('button[type="submit"]')?.focus();
     } else if (input.classList.contains("size-size")) {
       row.querySelector(".size-stock")?.focus();
@@ -833,11 +841,12 @@ function addSizeRow(size = "") {
       row.querySelector(".size-target")?.focus();
     } else if (input.classList.contains("size-target")) {
       const next = rows[index + 1]?.querySelector(".size-size");
-      if (next) next.focus();
+      if (next) { next.focus(); next.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
       else $("add-product-form").querySelector('button[type="submit"]')?.focus();
     }
   }));
   $("size-rows").appendChild(row);
+  if (!size) window.requestAnimationFrame(() => { row.scrollIntoView({ block: "nearest", behavior: "smooth" }); row.querySelector(".size-size")?.focus(); });
 }
 function resetAddForm() {
   $("size-rows").innerHTML = "";
@@ -873,6 +882,7 @@ $("add-product-form").addEventListener("submit", async (e) => {
     initial_stock: Number(row.querySelector(".size-stock").value) || 0,
     reorder_threshold: Number(row.querySelector(".size-threshold").value) || 5,
     target_stock_level: Number(row.querySelector(".size-target").value) || 20,
+    unit_cost: row.querySelector(".size-cost").value === "" ? null : Number(row.querySelector(".size-cost").value),
   })).filter((v) => v.size);
   if (!variants.length) { msg.textContent = "Add at least one size."; msg.className = "msg error"; return; }
 
@@ -880,7 +890,15 @@ $("add-product-form").addEventListener("submit", async (e) => {
   submitButton.dataset.originalText = submitButton.textContent;
   submitButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving product…';
   try {
+    const aliasText = form.elements.namedItem("marketplace_aliases")?.value || "";
+    const marketplace_aliases = aliasText.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map((line, index) => {
+      const parts = line.split("|").map(s => s.trim());
+      if (parts.length !== 3 || parts.some(x => !x)) throw new Error(`Marketplace alias line ${index + 1}: use SIZE | MARKETPLACE | SKU`);
+      return { size: parts[0], marketplace: parts[1], sku: parts[2] };
+    });
     const data = await apiPost(`${API}/products`, {
+      unit_cost: form.elements.namedItem("unit_cost").value === "" ? null : Number(form.elements.namedItem("unit_cost").value),
+      marketplace_aliases,
       sku: form.elements.namedItem("sku").value,
       name: form.elements.namedItem("name").value,
       category: form.elements.namedItem("category").value,

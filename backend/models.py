@@ -77,6 +77,7 @@ class Product(Base):
 
     variants = relationship("Variant", back_populates="product", cascade="all, delete-orphan")
     reference_images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+    cost_record = relationship("ProductCost", back_populates="product", uselist=False, cascade="all, delete-orphan")
 
 
 class ProductImage(Base):
@@ -125,6 +126,8 @@ class Variant(Base):
 
     product = relationship("Product", back_populates="variants")
     transactions = relationship("InventoryTransaction", back_populates="variant")
+    cost_record = relationship("VariantCost", back_populates="variant", uselist=False, cascade="all, delete-orphan")
+    marketplace_aliases = relationship("MarketplaceSkuAlias", back_populates="variant", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("product_id", "size", name="uq_product_size"),)
 

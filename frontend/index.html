@@ -11,7 +11,8 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <link rel="stylesheet" href="myraa-production.css?v=2">
 <link rel="stylesheet" href="myraa-signature-v3.css?v=3">
-  <link rel="stylesheet" href="packing-picklist.css?v=3">
+  <link rel="stylesheet" href="packing-picklist.css?v=4">
+  <link rel="stylesheet" href="business-workspace.css?v=1">
 </head>
 <body>
 
@@ -41,6 +42,7 @@
       <button data-view="visual" class="rail-link"><i class="fa-solid fa-camera-retro"></i><span class="rail-label">Visual Product Search</span></button>
       <button data-view="bulk" class="rail-link"><i class="fa-solid fa-clipboard-check"></i><span class="rail-label">Bulk Stock Count</span></button>
       <button data-view="orders" class="rail-link"><i class="fa-solid fa-file-invoice"></i><span class="rail-label">Process Orders</span></button>
+      <button data-view="challans" class="rail-link"><i class="fa-solid fa-file-invoice-dollar"></i><span class="rail-label">Purchase Challans</span></button>
       <button data-view="packing" class="rail-link"><i class="fa-solid fa-people-carry-box"></i><span class="rail-label">Packing Picklist</span></button>
       <button data-view="reorder" class="rail-link"><i class="fa-solid fa-cart-shopping"></i><span class="rail-label">Reorder List</span></button>
       <button data-view="alerts" class="rail-link"><i class="fa-solid fa-bell"></i><span class="rail-label">Alerts</span><span id="alert-count" class="badge" hidden>0</span></button>
@@ -207,6 +209,31 @@
     </section>
 
     <!-- ================= ORDERS ================= -->
+    <section id="view-challans" class="view">
+      <header class="view-head"><div><h1>Purchase Challans &amp; Inbound Inventory</h1><p class="sub">Manage supplier orders, pending receipts, and push fully received stock to inventory once.</p></div></header>
+      <div class="challan-summary" id="challan-summary"><span>Loading challans…</span></div>
+      <div class="challan-layout">
+        <form id="challan-import-form" class="panel challan-form">
+          <h2><i class="fa-solid fa-file-arrow-up"></i> Import supplier challan</h2>
+          <div class="challan-form-grid">
+            <label class="field">Party / Supplier<input class="input" name="party_name" required maxlength="180" placeholder="Supplier name"></label>
+            <label class="field">Challan Number<input class="input" name="challan_no" required maxlength="120" placeholder="CH-001"></label>
+            <label class="field">Invoice Number (optional)<input class="input" name="invoice_no" maxlength="120" placeholder="INV-001"></label>
+            <label class="field">Order Date<input class="input" name="order_date" type="date" required></label>
+          </div>
+          <label class="field">Upload Excel / CSV<input class="input" type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
+          <p class="hint">Excel columns: SKU, Product Name, Size, Qty, Unit Cost, Category (optional). You can fill missing costs in the receipt table before pushing inventory.</p>
+          <a class="link-btn" href="assets/purchase-challan-template.xlsx" download="MYRAA_Purchase_Challan_Template.xlsx"><i class="fa-solid fa-file-csv"></i> Download Excel template</a>
+          <button type="submit" class="btn-primary"><i class="fa-solid fa-upload"></i> Import Pending Challan</button>
+          <p id="challan-import-message" class="msg" aria-live="polite"></p>
+        </form>
+        <div class="panel"><h2>Supplier Orders</h2><div id="challan-batches" class="challan-batches"><p class="hint">No purchase challans yet.</p></div></div>
+      </div>
+      <section class="panel challan-detail-panel" id="challan-detail-panel" hidden>
+        <div id="challan-detail"></div>
+      </section>
+    </section>
+
     <section id="view-orders" class="view">
       <div class="myraa-flow" aria-label="Existing order processing workflow"><span><i class="fa-solid fa-file-arrow-up"></i> 1 · Import marketplace file</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-link"></i> 2 · Match SKUs</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i><span><i class="fa-solid fa-box"></i> 3 · Dispatch ready stock</span></div>
       <header class="view-head"><div><h1>Process Orders</h1><p class="sub">Upload marketplace orders. Dispatch deducts only counted stock that is ready; any remaining quantity stays pending.</p></div><div class="order-head-actions"><button id="refresh-order-readiness" class="btn-secondary" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh readiness</button><button id="retry-order-matches" class="btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> Retry SKU matching</button></div></header>
@@ -362,9 +389,12 @@
             <label class="photo-angle-card" for="add-extra-photo-input"><span class="photo-angle-thumb" id="add-extra-photo-thumb"><i class="fa-solid fa-images"></i></span><span><strong>Other views</strong><small id="add-extra-photo-label">Add more views</small></span><input type="file" id="add-extra-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
           </div>
           <p class="hint product-photo-hint">Use clear front, back, and fabric-detail photos. Up to 8 photos can help visual product search.</p>
-          <label class="field">SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
+          <label class="field">Master SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
           <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
           <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>
+          <label class="field">Default Unit Cost (₹)<input name="unit_cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 240.00" class="input"><small class="hint">Used for sizes without their own cost.</small></label>
+          <label class="field">Marketplace SKU Mappings (optional)<textarea name="marketplace_aliases" class="input" rows="3" placeholder="S | Myntra | MYNTRA-STYLE-S
+M | Ajio | AJIO-STYLE-M"></textarea><small class="hint">One per line: SIZE | MARKETPLACE | SKU. Each external SKU maps to one exact size.</small></label>
         </div>
       </div>
 
@@ -475,6 +505,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="app.js?v=myraa-production-2"></script>
 <script src="myraa-signature-v3.js?v=3"></script>
-<script src="packing-picklist.js?v=3"></script>
+<script src="packing-picklist.js?v=4"></script>
+<script src="business-workspace.js?v=1"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
+from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -10,14 +11,23 @@ class VendorOut(BaseModel):
     contact: Optional[str] = None
 
 
+class MarketplaceAliasCreate(BaseModel):
+    size: str
+    marketplace: str = "OTHER"
+    sku: str
+
+
 class VariantCreate(BaseModel):
     size: str
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, le=99999999)
     initial_stock: int = 0
     reorder_threshold: int = 5
     target_stock_level: int = 20
 
 
 class ProductCreate(BaseModel):
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, le=99999999)
+    marketplace_aliases: List[MarketplaceAliasCreate] = Field(default_factory=list)
     sku: str
     name: str
     category: Optional[str] = None
@@ -26,6 +36,7 @@ class ProductCreate(BaseModel):
 
 
 class ProductUpdate(BaseModel):
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, le=99999999)
     sku: Optional[str] = None
     name: Optional[str] = None
     category: Optional[str] = None
@@ -33,11 +44,16 @@ class ProductUpdate(BaseModel):
 
 
 class VariantUpdate(BaseModel):
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, le=99999999)
     reorder_threshold: Optional[int] = None
     target_stock_level: Optional[int] = None
 
 
 class VariantOut(BaseModel):
+    unit_cost: Optional[float] = None
+    cost_value: Optional[float] = None
+    cost_override: Optional[float] = None
+    marketplace_aliases: list[dict] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
     variant_code: str
     size: str
@@ -48,6 +64,8 @@ class VariantOut(BaseModel):
 
 
 class ProductOut(BaseModel):
+    unit_cost: Optional[float] = None
+    stock_cost_value: float = 0
     model_config = ConfigDict(from_attributes=True)
     id: int
     sku: str

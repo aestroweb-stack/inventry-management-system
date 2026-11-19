@@ -22,7 +22,9 @@ from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager, al
 
 from database import Base, engine, get_db, SessionLocal
 import models
+import business_models
 import schemas
+from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
     barcode_service, bulk_stock_service, bulk_product_service,
@@ -117,6 +119,7 @@ async def _app_lifespan(_app):
 
 
 app = FastAPI(title="Inventory Management System", version="1.4", lifespan=_app_lifespan)
+app.include_router(business_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -290,6 +293,10 @@ def _variant_out(v: models.Variant) -> dict:
         "variant_code": v.variant_code, "size": v.size, "current_stock": v.current_stock,
         "reorder_threshold": v.reorder_threshold, "target_stock_level": v.target_stock_level,
         "status": _variant_status(v),
+        "unit_cost": float(v.cost_record.unit_cost if v.cost_record else v.product.cost_record.unit_cost if v.product.cost_record else 0) if (v.cost_record or v.product.cost_record) else None,
+        "cost_value": float((v.cost_record.unit_cost if v.cost_record else v.product.cost_record.unit_cost if v.product.cost_record else 0) * max(v.current_stock, 0)) if (v.cost_record or v.product.cost_record) and v.last_counted_at else None,
+        "cost_override": float(v.cost_record.unit_cost) if v.cost_record else None,
+        "marketplace_aliases": [{"id": a.id, "marketplace": a.marketplace, "sku": a.alias_code} for a in v.marketplace_aliases],
     }
 
 
@@ -352,6 +359,8 @@ def _product_out(p: models.Product) -> dict:
         "vendor": {"id": p.vendor.id, "name": p.vendor.name, "contact": p.vendor.contact} if p.vendor else None,
         "variants": [_variant_out(v) for v in sorted(live_variants, key=lambda v: (bulk_stock_service.SIZE_ORDER.get(v.size, 99), v.size))],
         "total_stock": sum(v.current_stock for v in live_variants),
+        "unit_cost": float(p.cost_record.unit_cost) if p.cost_record else None,
+        "stock_cost_value": float(sum((v.cost_record.unit_cost if v.cost_record else p.cost_record.unit_cost if p.cost_record else 0) * max(v.current_stock, 0) for v in live_variants if v.last_counted_at)),
     }
 
 
@@ -368,7 +377,9 @@ def _variant_row(v: models.Variant) -> dict:
 
 def _get_product_by_sku(db: Session, sku: str, include_deleted: bool = False) -> models.Product:
     q = db.query(models.Product).options(
-        selectinload(models.Product.variants),
+        selectinload(models.Product.variants).selectinload(models.Variant.cost_record),
+        selectinload(models.Product.variants).selectinload(models.Variant.marketplace_aliases),
+        selectinload(models.Product.cost_record),
         selectinload(models.Product.reference_images),
         joinedload(models.Product.vendor),
     ) \
@@ -531,7 +542,9 @@ def _fuzzy_product_score(value: str, product) -> float:
 @app.get("/api/products")
 def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), paged: bool = False, db: Session = Depends(get_db)):
     base = db.query(models.Product).options(
-        selectinload(models.Product.variants),
+        selectinload(models.Product.variants).selectinload(models.Variant.cost_record),
+        selectinload(models.Product.variants).selectinload(models.Variant.marketplace_aliases),
+        selectinload(models.Product.cost_record),
         selectinload(models.Product.reference_images),
         joinedload(models.Product.vendor),
     ) \
@@ -676,6 +689,18 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
             inventory_service.apply_stock_change(db, variant, v.initial_stock, transaction_type=models.TransactionType.INITIAL_STOCK, reference="product created")
         alert_service.check_variant_alert(db, variant)
 
+    # Costs and marketplace aliases share the same transaction as product creation.
+    if payload.unit_cost is not None:
+        upsert_product_cost(db, product.id, payload.unit_cost)
+    for input_variant in payload.variants:
+        saved = next(v for v in product.variants if v.size == input_variant.size.strip().upper())
+        if input_variant.unit_cost is not None:
+            upsert_variant_cost(db, saved.id, input_variant.unit_cost)
+    for alias in payload.marketplace_aliases:
+        saved = next((v for v in product.variants if v.size == alias.size.strip().upper()), None)
+        if not saved:
+            raise HTTPException(422, f"Alias size {alias.size} is not part of this product")
+        add_alias(db, saved, alias.marketplace, alias.sku)
     db.commit()
     excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(product)
@@ -686,6 +711,9 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
 def update_product(sku: str, payload: schemas.ProductUpdate, db: Session = Depends(get_db)):
     product = _get_product_by_sku(db, sku)
     data = payload.model_dump(exclude_unset=True)
+    cost = data.pop("unit_cost", None)
+    if cost is not None:
+        upsert_product_cost(db, product.id, cost)
 
     # SKU is the single canonical identity used by Products, Bulk Stock,
     # Reorder and new marketplace-order matching. If the user edits it,
@@ -739,6 +767,8 @@ def add_size(sku: str, payload: schemas.VariantCreate, db: Session = Depends(get
         inventory_service.apply_stock_change(db, variant, payload.initial_stock, transaction_type=models.TransactionType.INITIAL_STOCK, reference="size added")
         variant.last_counted_at = datetime.now(timezone.utc)
     alert_service.check_variant_alert(db, variant)
+    if payload.unit_cost is not None:
+        upsert_variant_cost(db, variant.id, payload.unit_cost)
     db.commit()
     excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(product)
@@ -748,7 +778,11 @@ def add_size(sku: str, payload: schemas.VariantCreate, db: Session = Depends(get
 @app.patch("/api/variants/{variant_code}", response_model=schemas.VariantOut)
 def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Session = Depends(get_db)):
     variant = _get_variant_by_code(db, variant_code)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    cost = data.pop("unit_cost", None)
+    if cost is not None:
+        upsert_variant_cost(db, variant.id, cost)
+    for field, value in data.items():
         setattr(variant, field, value)
     db.flush()
     alert_service.check_variant_alert(db, variant)

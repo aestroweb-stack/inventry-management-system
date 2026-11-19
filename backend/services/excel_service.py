@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from models import Product, Variant, OrderUpload, OrderLine, OrderLineStatus, TransactionType
+from business_models import MarketplaceSkuAlias
 from services import reorder_service
 from services.inventory_service import apply_stock_change, InsufficientStockError
 from services.alert_service import check_variant_alert
@@ -255,6 +256,9 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
             for alias in _code_aliases(key):
                 exact.setdefault(alias, {})[v.id] = v
         pair[(v.product.sku.upper(), v.size.upper())] = v
+    for mapped in db.query(MarketplaceSkuAlias).all():
+        for alias in _code_aliases(mapped.normalized_code):
+            exact.setdefault(alias, {})[mapped.variant_id] = next((v for v in variants if v.id == mapped.variant_id), None)
     cross_brand_index = _build_cross_brand_variant_index(variants)
 
     changed = 0
@@ -264,7 +268,7 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
         hits = {}
         for alias in _code_aliases(raw):
             hits.update(exact.get(alias, {}))
-        candidates = list(hits.values())
+        candidates = [v for v in hits.values() if v is not None]
         if inferred_size:
             candidates = [v for v in candidates if v.size.upper() == inferred_size] or candidates
         if len(candidates) == 1:
@@ -379,6 +383,17 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
             for key in (v.variant_code, v.seller_sku_code, v.marketplace_sku_code):
                 for alias in _code_aliases(key):
                     code_map[alias][v.id] = v
+
+    # User-managed marketplace SKU mappings win over fuzzy product-name matching.
+    # Only exact aliases already present in this particular order upload are loaded.
+    expanded_codes = sorted({alias for code in all_codes for alias in _code_aliases(code)})
+    for code_chunk in _chunks(expanded_codes):
+        aliases = db.query(MarketplaceSkuAlias).filter(MarketplaceSkuAlias.normalized_code.in_(code_chunk)).all()
+        for mapping in aliases:
+            variant = db.query(Variant).options(joinedload(Variant.product)).filter(Variant.id == mapping.variant_id, Variant.is_deleted.is_(False)).first()
+            if variant and not variant.product.is_deleted:
+                for alias in _code_aliases(mapping.normalized_code):
+                    code_map[alias][variant.id] = variant
 
     # The code-map query above is intentionally chunked by raw marketplace
     # codes. Now query the expanded base Product SKU list as well.
