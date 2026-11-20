@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -28,6 +29,7 @@ from workspace_models import WorkspaceUser
 from workspace_auth import COOKIE, sign_session, user_data, get_user_from_cookie
 from services.app_auth import origin_allowed
 
+logger = logging.getLogger("myraa.clerk_auth")
 router = APIRouter(prefix="/api/clerk", tags=["Clerk full-app authentication"])
 BOUND_COOKIE = "myraa_clerk_bound"
 # Short-lived server cookie; the Clerk browser session can refresh it.
@@ -95,7 +97,15 @@ def validate_clerk_token(request: Request) -> str:
         )
         state = _clerk_sdk().authenticate_request(request, options)
         if not state.is_signed_in:
-            raise HTTPException(401, "Clerk session invalid or expired")
+            # Clerk reports why token verification failed (e.g. an incorrect
+            # authorized party), but the previous generic error concealed it.
+            # Only expose a bounded reason code: never log/return the JWT.
+            reason_value = getattr(getattr(state, "reason", None), "name", None)
+            if not reason_value:
+                reason_value = str(getattr(state, "reason", "UNKNOWN"))
+            reason = reason_value if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", reason_value) else "UNKNOWN"
+            logger.warning("Clerk request rejected: %s", reason)
+            raise HTTPException(401, f"Clerk session rejected: {reason}")
         payload = state.payload or {}
         sub = payload.get("sub", "")
         if not isinstance(sub, str) or not re.fullmatch(r"user_[a-zA-Z0-9]+", sub):

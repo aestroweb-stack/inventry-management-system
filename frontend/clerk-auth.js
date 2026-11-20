@@ -56,11 +56,20 @@
     if(busy || !hasSession()) return;
     busy=true;
     try {
-      const token = await clerk.session.getToken();
-      if (!token) throw new Error('Clerk session token not available');
-      const result = await fetch('/api/clerk/exchange', {method:'POST',credentials:'same-origin',
-        headers:{'Authorization':`Bearer ${token}`,'Accept':'application/json'}});
-      const payload = await result.json().catch(()=>({}));
+      // Clerk tokens are short lived. On 401, request one fresh token from
+      // Clerk and retry exactly once. Never skip backend JWT verification.
+      const submit = async (forceRefresh) => {
+        const token = await clerk.session.getToken(forceRefresh ? {skipCache:true} : undefined);
+        if (!token) throw new Error('Clerk session token not available. Sign in again.');
+        const result = await fetch('/api/clerk/exchange', {method:'POST',credentials:'same-origin',
+          headers:{'Authorization':`Bearer ${token}`,'Accept':'application/json'}});
+        const payload = await result.json().catch(()=>({}));
+        return {result,payload};
+      };
+      let {result,payload} = await submit(false);
+      if (result.status === 401 && hasSession()) {
+        ({result,payload} = await submit(true));
+      }
       if(!result.ok) throw new Error(payload.detail || `HTTP ${result.status}`);
       account=payload.approved ? payload.user : null;
       if(payload.approved) {
