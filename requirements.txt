@@ -25,4 +25,4 @@ redis>=5.0
 # Optional model service: backend/requirements-visual-ai.txt.
 # Default photo recognition runs via the server-side Gemini Vision API.
 psycopg2-binary>=2.9.9
-clerk-backend-api>=6.0.1,<9clerk-backend-api>=6.0.1,<9
+clerk-backend-api>=6.0.1,<9
