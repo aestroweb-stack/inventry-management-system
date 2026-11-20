@@ -14,9 +14,11 @@ from io import BytesIO
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 TESTDIR = tempfile.TemporaryDirectory()
-os.environ['DATABASE_URL'] = 'sqlite:///' + str(Path(TESTDIR.name) / 'packing_master.sqlite')
-
-from database import Base, SessionLocal, engine
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from database import Base
+engine = create_engine('sqlite:///' + str(Path(TESTDIR.name) / 'packing_master.sqlite'))
+SessionLocal = sessionmaker(bind=engine)
 from models import Product, Variant
 from business_models import ProductMarketplaceAlias, MarketplaceSkuAlias
 from services.packing_picklist_service import transform, apply_registered_master_skus, to_xlsx

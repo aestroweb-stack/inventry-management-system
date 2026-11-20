@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="business-workspace.css?v=2">
   <link rel="stylesheet" href="product-challan-pages.css?v=3">
 <link rel="stylesheet" href="workspace-auth.css?v=2">
+<link rel="stylesheet" href="clerk-auth.css?v=1">
 </head>
 <body>
 
@@ -508,42 +509,11 @@
   <div class="assistant-photo-controls"><button type="button" data-photo-zoom="out" aria-label="Zoom out">−</button><button type="button" data-photo-zoom="reset">100%</button><button type="button" data-photo-zoom="in" aria-label="Zoom in">+</button><button id="assistant-photo-change" type="button"><i class="fa-solid fa-camera"></i> Change photo</button></div>
 </div>
 
-<section id="myraa-login" class="myraa-login" role="dialog" aria-modal="true" aria-label="MYRAA login and sign up" hidden>
-  <div class="myraa-login-card">
-    <div class="login-visual"><img src="assets/myraa-lady-full.webp" alt="MYRAA virtual assistant"><div class="login-visual-copy"><strong>MYRAA, your complete inventory workspace.</strong><span>Products, orders, packing, challans and AI.</span></div></div>
-    <div class="login-fields workspace-login-fields">
-      <div class="login-mark"><img src="assets/myraa-mark.svg" alt="MYRAA" width="34" height="34"></div>
-      <span class="section-eyebrow">SECURE MYRAA WORKSPACE</span><h2>Welcome to MYRAA</h2><p>Your personal account for the complete inventory app.</p>
-      <nav class="workspace-auth-tabs" aria-label="Sign in options"><button type="button" data-wsa-tab="login" class="is-active">Sign in</button><button type="button" data-wsa-tab="signup">Create account</button></nav>
-      <form id="workspace-login-form" class="workspace-auth-form">
-        <label>Login ID or email<input name="login" type="text" autocomplete="username" required placeholder="you@company.com"></label>
-        <label>Password<input name="password" type="password" autocomplete="current-password" minlength="12" required placeholder="Your password"></label>
-        <button class="btn-primary" type="submit"><i class="fa-solid fa-envelope"></i> Send login OTP</button>
-      </form>
-      <form id="workspace-login-otp-form" class="workspace-auth-form" hidden>
-        <strong>Email verification</strong><p>Enter the 6-digit code sent to your email.</p>
-        <label>6-digit code<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" minlength="6" pattern="[0-9]{6}" required></label>
-        <button class="btn-primary" type="submit">Verify &amp; enter MYRAA</button>
-        <button type="button" class="btn-secondary" data-wsa-back="login">Back</button>
-      </form>
-      <form id="workspace-signup-form" class="workspace-auth-form" hidden>
-        <div class="workspace-form-pair"><label>Full name<input name="display_name" required minlength="2" maxlength="160" autocomplete="name"></label><label>Login ID<input name="login_id" required minlength="3" maxlength="80" autocomplete="username"></label></div>
-        <label>Email address<input name="email" type="email" required autocomplete="email"></label>
-        <label>Business / seller name<input name="business_name" maxlength="180"></label>
-        <label>Mobile number<input name="phone" type="tel" maxlength="32" autocomplete="tel"></label>
-        <label>Password (12+ characters)<input name="password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"></label>
-        <small>After email verification, the MYRAA owner must approve your account before you can access inventory.</small>
-        <button class="btn-primary" type="submit"><i class="fa-solid fa-user-plus"></i> Create account</button>
-      </form>
-      <form id="workspace-signup-otp-form" class="workspace-auth-form" hidden>
-        <strong>Verify your email</strong><p>Enter the code to finish registration. Admin approval is next.</p>
-        <label>6-digit code<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" minlength="6" pattern="[0-9]{6}" required></label>
-        <button class="btn-primary" type="submit">Verify email</button>
-        <button type="button" id="workspace-resend-signup" class="btn-secondary">Resend code</button><button type="button" class="btn-secondary" data-wsa-back="signup">Back</button>
-      </form>
-      <p id="myraa-login-error" class="login-error" role="status" aria-live="polite"></p>
-      <small class="workspace-auth-note"><i class="fa-solid fa-shield-halved"></i> Individual logins · Email OTP · Admin approval</small>
-    </div>
+<section id="myraa-login" class="myraa-login" role="dialog" aria-modal="true" aria-label="MYRAA sign in" hidden>
+  <div class="myraa-clerk-gate"><img src="assets/myraa-lady-portrait.webp" alt="MYRAA assistant">
+    <h2>Welcome to MYRAA</h2><p>Secure sign in using Google or email verification code.</p>
+    <a class="myraa-clerk-continue" href="/app/sign-in.html">Continue to secure login</a>
+    <p id="myraa-login-error" role="status"></p>
   </div>
 </section>
 <section id="workspace-profile-overlay" class="workspace-profile-overlay" role="dialog" aria-modal="true" aria-label="Your MYRAA account" hidden>
@@ -559,7 +529,7 @@
       <p id="workspace-profile-role" class="hint"></p>
       <button type="submit" class="btn-primary">Save profile</button>
     </form>
-    <details><summary>Change password</summary><form id="workspace-password-form" class="workspace-auth-form"><label>Current password<input name="current_password" type="password" required></label><label>New password (12+ characters)<input name="new_password" type="password" minlength="12" required></label><button type="submit" class="btn-secondary">Change password</button></form></details>
+    <p class="hint">Google / email verification is managed securely by Clerk.</p>
     <div class="workspace-profile-actions"><p id="workspace-profile-message" aria-live="polite"></p><button id="workspace-profile-logout" class="btn-secondary" type="button">Sign out</button></div>
   </div>
 </section>
@@ -573,6 +543,6 @@
 <script src="packing-picklist.js?v=4"></script>
 <script src="business-workspace.js?v=2"></script>
 <script src="product-challan-pages.js?v=3"></script>
-<script src="workspace-auth.js?v=2"></script>
+<script src="clerk-auth.js?v=1"></script>
 </body>
 </html>

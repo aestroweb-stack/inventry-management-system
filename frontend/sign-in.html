@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MYRAA · Secure Login</title>
+<link rel="icon" href="assets/myraa-favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="clerk-auth.css?v=1">
+</head>
+<body data-myraa-clerk="login">
+<main class="clerk-shell">
+  <section class="clerk-brand">
+    <a href="/app/" class="clerk-wordmark"><img src="assets/myraa-mark.svg" alt="" width="47" height="47"> MYRAA</a>
+    <div class="clerk-brand-content"><span class="clerk-eyebrow">MYRAA INVENTORY WORKSPACE</span>
+      <h1>Smarter inventory.<br>Secure team access.</h1>
+      <p>One professional workspace for products, scanning, packing picklists, supplier challans and Gemini AI.</p>
+      <div class="clerk-lady"><img src="assets/myraa-lady-full.webp" alt="MYRAA assistant character" loading="eager"></div>
+    </div>
+  </section>
+  <section class="clerk-auth-pane">
+    <div class="clerk-auth-card">
+      <div class="clerk-top-label">SECURE MYRAA SIGN IN</div>
+      <h2>Welcome back</h2><p>Continue with Google or get a one-time code on your email.</p>
+      <div class="clerk-tab-list"><button type="button" class="clerk-tab active" id="clerk-tab-login">Sign in</button>
+      <button type="button" class="clerk-tab" id="clerk-tab-signup">Create account</button></div>
+      <div id="clerk-auth-root" class="clerk-auth-root" aria-live="polite"><p>Loading secure sign in…</p></div>
+      <div id="clerk-approval" hidden><div class="clerk-approval-icon">✓</div><h3>Identity verified</h3>
+        <p>Your MYRAA account is pending admin approval. Once approved, click Check access.</p>
+        <div class="clerk-approval-actions"><button type="button" id="clerk-check-access" class="clerk-main-btn">Check access</button>
+        <button type="button" id="clerk-switch-user" class="clerk-link-btn">Sign out</button></div>
+      </div>
+      <p id="clerk-auth-error" class="clerk-auth-error" role="alert"></p>
+      <div class="clerk-security-caption">Protected sign-in · Inventory access requires admin approval</div>
+    </div>
+  </section>
+</main>
+<script src="clerk-auth.js?v=1"></script>
+</body>
+</html>

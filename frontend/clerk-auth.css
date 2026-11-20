@@ -1,0 +1,24 @@
+/* MYRAA Clerk authentication — responsive day/night-ready design */
+:root{--clerk-ink:#073d34;--clerk-muted:#617d73;--clerk-green:#08765b;--clerk-bg:#f4f8f5;--clerk-border:#d9e8df}
+*{box-sizing:border-box}body[data-myraa-clerk=login]{margin:0;background:var(--clerk-bg);color:var(--clerk-ink);font-family:Inter,"Segoe UI",Arial,sans-serif}
+.clerk-shell{min-height:100vh;display:grid;grid-template-columns:minmax(310px,45%) minmax(380px,55%)}
+.clerk-brand{background:radial-gradient(circle at 80% 18%,#197e61,#045245 48%,#032d2b);color:white;padding:36px clamp(25px,5vw,88px);position:relative;overflow:hidden}
+.clerk-wordmark{color:white;text-decoration:none;display:flex;gap:12px;align-items:center;font:800 34px Georgia,serif}
+.clerk-brand-content{margin-top:min(18vh,150px)}.clerk-eyebrow{font-size:12px;letter-spacing:.18em;color:#b9ead3;font-weight:800}
+.clerk-brand h1{font:700 clamp(38px,4vw,66px)/1.08 Georgia,serif;max-width:560px;margin:20px 0}
+.clerk-brand p{font-size:16px;line-height:1.7;max-width:410px;color:#d5ebe0}
+.clerk-lady{position:absolute;bottom:-10px;right:0;width:250px;height:300px;pointer-events:none;overflow:hidden;opacity:.88}
+.clerk-lady img{width:100%;height:100%;object-fit:contain;object-position:bottom}
+.clerk-auth-pane{display:grid;place-items:center;padding:40px 20px}.clerk-auth-card{width:min(480px,100%);padding:34px;background:#fff;border:1px solid var(--clerk-border);border-radius:24px;box-shadow:0 16px 55px #083e2a12}
+.clerk-top-label{font-size:11px;font-weight:800;color:var(--clerk-green);letter-spacing:.15em}.clerk-auth-card h2{font-size:33px;margin:10px 0 5px}.clerk-auth-card>p{font-size:14px;color:var(--clerk-muted);line-height:1.6}
+.clerk-tab-list{display:flex;gap:10px;margin:18px 0}.clerk-tab{flex:1;border-radius:12px;padding:12px 16px;cursor:pointer;background:#f4f8f4;border:1px solid var(--clerk-border);color:var(--clerk-ink);font-weight:700}
+.clerk-tab.active{background:#d9f2e6;border-color:#75bc9a}.clerk-auth-root{display:grid;justify-items:center;min-height:230px}.clerk-auth-root>p{align-self:center;color:var(--clerk-muted)}
+.clerk-auth-error{color:#9a2424!important;min-height:22px;font-weight:600}.clerk-security-caption{padding-top:15px;border-top:1px solid var(--clerk-border);margin-top:16px;text-align:center;font-size:12px;color:var(--clerk-muted)}
+.clerk-approval-icon{border-radius:50%;background:#d5f4e0;color:#08765b;font-size:32px;width:62px;height:62px;display:grid;place-items:center}
+#clerk-approval{padding:20px;border-radius:16px;border:1px solid #b7e4ca;background:#f0faf4}
+#clerk-approval p{line-height:1.65}.clerk-approval-actions{display:flex;gap:10px}.clerk-main-btn{background:#08765b;color:white;border:0;padding:12px 16px;border-radius:10px;cursor:pointer}.clerk-link-btn{background:transparent;color:#086044;border:1px solid #b2d7c6;padding:12px 16px;border-radius:10px;cursor:pointer}
+.myraa-clerk-gate{text-align:center;max-width:360px;margin:auto;padding:30px 20px}.myraa-clerk-gate img{height:98px;max-width:100%;object-fit:contain;border-radius:50%}
+.myraa-clerk-gate h2{font:700 30px Georgia,serif;margin:14px 0}.myraa-clerk-gate p{line-height:1.5;color:var(--clerk-muted)}
+.myraa-clerk-continue{display:inline-block;background:#08785b;color:white!important;padding:13px 24px;border-radius:12px;text-decoration:none;font-weight:750;margin-top:12px}
+@media(max-width:900px){.clerk-shell{grid-template-columns:1fr}.clerk-brand{padding:26px;min-height:220px}.clerk-brand-content{margin-top:30px}.clerk-brand h1{font-size:32px}.clerk-lady{width:145px;height:170px}.clerk-auth-pane{padding:22px 14px}.clerk-auth-card{padding:22px}}
+@media(max-width:520px){.clerk-brand{min-height:172px}.clerk-brand h1{font-size:25px}.clerk-brand p{display:none}.clerk-lady{width:125px;height:145px}.clerk-wordmark{font-size:26px}.clerk-auth-card h2{font-size:28px}.clerk-approval-actions{flex-wrap:wrap}}

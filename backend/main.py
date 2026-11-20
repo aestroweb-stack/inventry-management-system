@@ -25,6 +25,7 @@ import models
 import business_models
 import workspace_models  # Register account table before create_all
 from workspace_auth import router as workspace_auth_router, admin as workspace_admin_router, account_from_request
+from clerk_auth import router as clerk_auth_router, ClerkIdentity  # register link table before create_all
 import schemas
 from business_api import router as business_router, upsert_product_cost, upsert_variant_cost, add_alias, add_product_alias
 from services import (
@@ -123,6 +124,7 @@ async def _app_lifespan(_app):
 app = FastAPI(title="Inventory Management System", version="1.4", lifespan=_app_lifespan)
 app.include_router(business_router)
 app.include_router(workspace_auth_router)
+app.include_router(clerk_auth_router)
 app.include_router(workspace_admin_router)
 
 app.add_middleware(
@@ -150,16 +152,21 @@ async def protect_inventory_mcp(request: Request, call_next):
                 supplied = authorization[7:].strip()
         if not supplied or not hmac.compare_digest(supplied, expected):
             return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
-    # The full MYRAA workspace requires an approved personal account.
-    # APP_PASSWORD is intentionally not read anywhere in this authentication path.
+    # Clerk is the only sign-in provider. Keep profile/admin management routes
+    # but retire all email/password and home-grown OTP endpoints entirely.
     path = request.url.path
+    if path.startswith("/api/workspace-auth/") and path not in (
+        "/api/workspace-auth/status", "/api/workspace-auth/me",
+        "/api/workspace-auth/me/photo", "/api/workspace-auth/logout"):
+        return JSONResponse({"detail": "Legacy login retired. Use Clerk Google or email code."}, status_code=410)
     account = account_from_request(request)
     if path.startswith("/static/product_images/") and account is None:
         return Response(status_code=401)
     # Signup and OTP endpoints independently validate identity; MCP has its own
     # bearer API key check above. Public health and auth status are read-only.
     if (path.startswith("/api/") and not path.startswith("/api/mcp")
-            and not path.startswith("/api/workspace-auth/")):
+            and not path.startswith("/api/workspace-auth/")
+            and not path.startswith("/api/clerk/")):
         if path not in ("/api/auth/status", "/api/auth/login", "/api/health"):
             if len(os.getenv("MYRAA_USER_SESSION_SECRET", "")) < 32:
                 return JSONResponse({"detail": "MYRAA_USER_SESSION_SECRET must be configured"}, status_code=503)
@@ -195,15 +202,14 @@ def auth_status(request: Request):
             "owner": bool(account and account.role == "admin"),
             "user_role": account.role if account else None,
             "configuration_required": len(os.getenv("MYRAA_USER_SESSION_SECRET", "")) < 32,
-            "signup_enabled": bool(os.getenv("MYRAA_SMTP_HOST") and os.getenv("MYRAA_SMTP_USER")
-                                   and os.getenv("MYRAA_SMTP_PASSWORD") and os.getenv("MYRAA_SMTP_FROM"))}
+            "signup_enabled": bool(os.getenv("CLERK_PUBLISHABLE_KEY") and os.getenv("CLERK_SECRET_KEY"))}
 
 
 @app.post("/api/auth/login")
 async def auth_login_deprecated():
     # Do not accidentally re-enable the old shared-password sign-in when an
     # operator leaves APP_PASSWORD in Railway environment variables.
-    raise HTTPException(410, "Shared password login retired. Use MYRAA account email/password + OTP.")
+    raise HTTPException(410, "Shared password login retired. Use Clerk Google or email code.")
 
 
 @app.post("/api/auth/logout")
