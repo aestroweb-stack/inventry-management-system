@@ -22,3 +22,7 @@
 .myraa-clerk-continue{display:inline-block;background:#08785b;color:white!important;padding:13px 24px;border-radius:12px;text-decoration:none;font-weight:750;margin-top:12px}
 @media(max-width:900px){.clerk-shell{grid-template-columns:1fr}.clerk-brand{padding:26px;min-height:220px}.clerk-brand-content{margin-top:30px}.clerk-brand h1{font-size:32px}.clerk-lady{width:145px;height:170px}.clerk-auth-pane{padding:22px 14px}.clerk-auth-card{padding:22px}}
 @media(max-width:520px){.clerk-brand{min-height:172px}.clerk-brand h1{font-size:25px}.clerk-brand p{display:none}.clerk-lady{width:125px;height:145px}.clerk-wordmark{font-size:26px}.clerk-auth-card h2{font-size:28px}.clerk-approval-actions{flex-wrap:wrap}}
+
+/* Never show the Clerk loading placeholder behind an approved/pending state.
+   Explicit display:grid rules otherwise override the browser's [hidden] style. */
+#clerk-auth-root[hidden], #clerk-approval[hidden], .clerk-tab[hidden] { display:none !important; }

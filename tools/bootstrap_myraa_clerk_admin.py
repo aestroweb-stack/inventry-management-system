@@ -20,12 +20,28 @@ sys.path.insert(0, str(BACKEND))
 os.chdir(BACKEND)  # Keep the deployment's SQLite path consistent.
 from database import Base, SessionLocal, engine
 from workspace_models import WorkspaceUser
+from clerk_auth import ClerkIdentity
+
+# Refuse to touch a different relative SQLite DB from the running server.
+# On Railway, PID 1 is normally the web server process.
+if engine.url.get_backend_name() == 'sqlite' and engine.url.database and not os.path.isabs(engine.url.database):
+    try:
+        service_cwd = Path('/proc/1/cwd').resolve(strict=True)
+    except (OSError, RuntimeError):
+        service_cwd = None
+    if service_cwd is not None and service_cwd != BACKEND.resolve():
+        raise SystemExit(
+            'STOP: Web server cwd is ' + str(service_cwd) + ', but admin script uses ' + str(BACKEND) +
+            '. Confirm DATABASE_URL and actual SQLite database path before proceeding.'
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--email', required=True)
     parser.add_argument('--name', default='MYRAA Administrator')
+    parser.add_argument('--promote-verified-pending', action='store_true',
+                        help='Explicitly promote a linked Clerk-verified pending account when NO admin exists')
     args=parser.parse_args()
     email=args.email.strip().lower()
     if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
@@ -40,8 +56,23 @@ def main():
                 print('PASS: Existing MYRAA admin email already matches. Clerk will link on verified login.')
                 return 0
             raise SystemExit('An admin already exists with another email. Existing admin must be reviewed manually; no overwrite performed.')
-        if db.query(WorkspaceUser).filter(WorkspaceUser.email==email).first():
-            raise SystemExit('Email belongs to an existing seller. Review it and promote explicitly in DB only after verifying ownership.')
+        existing=db.query(WorkspaceUser).filter(WorkspaceUser.email==email).first()
+        if existing:
+            if not args.promote_verified_pending:
+                raise SystemExit('This Clerk account already exists as a seller. Re-run with '
+                                 '--promote-verified-pending ONLY for your own verified first-admin account.')
+            if not existing.verified or not existing.active or existing.approved or existing.role!='viewer':
+                raise SystemExit('Account is not an active, verified, unapproved viewer; no changes made.')
+            link=db.query(ClerkIdentity).filter(ClerkIdentity.workspace_user_id==existing.id).first()
+            if not link:
+                raise SystemExit('No verified Clerk identity is linked to this account; no changes made.')
+            existing.role='admin'
+            existing.approved=True
+            existing.token_version=uuid.uuid4().hex  # Revoke stale session
+            db.commit()
+            print('PASS: Existing verified Clerk account promoted to MYRAA first admin:', email)
+            print('Click Check access on the login page, or refresh it and sign in again.')
+            return 0
         user=WorkspaceUser(login_id='admin',email=email,display_name=args.name,
                            password_hash='clerk-managed-no-password',business_name='MYRAA',
                            role='admin',verified=True,approved=True,active=True,token_version=uuid.uuid4().hex)
